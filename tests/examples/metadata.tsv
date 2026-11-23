@@ -1,0 +1,7 @@
+sequence_id	lineage_id	role	chrom	start	end	strand	mutation	notes
+LINA_wt	LINA	wt	chr1	1000000	1000080	+		
+LINA_m1	LINA	mutant					40A>T subst at 1-based 40	
+LINA_m2	LINA	mutant					41G>T subst at 1-based 41	
+LINB_wt	LINB	wt	chr7	5500000	5500120	-		
+LINB_m1	LINB	mutant					60C>G subst at 1-based 60	
+LINC_wt	LINC	wt						no coordinates declared
