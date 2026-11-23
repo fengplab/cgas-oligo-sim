@@ -135,6 +135,15 @@ def main() -> None:
             die(f"lineage {lid} has {len(wt)} members with role 'wt'; exactly one "
                 "parent defines the lineage's coordinates")
         has_wt = len(wt) == 1
+
+        declared = g[g["chrom"].notna() & (g["chrom"].astype(str) != "")]
+        loci = {(r["chrom"], int(r["start"]), int(r["end"]))
+                for _, r in declared.iterrows()}
+        if len(loci) > 1:
+            die(f"lineage {lid} has members declaring different loci {sorted(loci)}. "
+                "Members of one lineage occupy the same reference interval; a "
+                "substitution mutant does not move. Fix the input rather than "
+                "letting one of them win.")
         coords = {}
         if has_wt and pd.notna(wt.iloc[0]["chrom"]):
             coords = {"chrom": wt.iloc[0]["chrom"],

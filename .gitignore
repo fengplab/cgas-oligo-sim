@@ -228,8 +228,8 @@ __marimo__/
 # work/ holds every task's scratch, .singularity/ holds container images
 # (gigabytes), and .nextflow.log is rewritten on every run.
 # ---------------------------------------------------------------------------
-# Root-anchored on purpose: an unanchored "work/" also matches
-# tests/examples/crossrun_mimic/work/, which must be tracked.
+# Root-anchored on purpose: an unanchored "work/" would also match any
+# work/ directory nested under tests/examples/, which must stay tracked.
 /work/
 /.nextflow*
 /.singularity/

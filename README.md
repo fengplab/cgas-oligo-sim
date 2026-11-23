@@ -172,3 +172,81 @@ Slurm or Singularity. Synthetic data calibrates the method, never the biology.
 `tests/examples/` holds hand-written exemplars of the expected input shapes -
 an oligo FASTA, the lineage metadata TSV, a minimal-MEME motif file and an
 IUPAC consensus list. Those are tracked; generated fixtures are not.
+
+---
+
+## Building the panel
+
+The usual entry point. Your FASTA carries its own coordinates, so no lookup
+against another project is needed.
+
+```bash
+python3 bin/build_panel.py \
+    --fasta   my_oligos.fasta \
+    --mutants mutants.tsv \
+    --out-fasta oligos.fasta --out-metadata metadata.tsv --out-summary panel.json
+```
+
+`--mutants` is optional; without it no mutant is generated and the panel is
+the FASTA alone.
+
+### FASTA header
+
+The oligo name is the first token; the rest is annotation.
+
+```
+>rank1 chr1:130352560-130352639 summit=130352599 track=HSV-1 Infected THP1 Cells (Cytosolic Fraction - 1 HPI)
+```
+
+| field | meaning |
+| - | - |
+| `rank1` | the oligo name used everywhere downstream |
+| `chr1:130352560-130352639` | locus, **0-based half-open**, + strand |
+| `summit=` | optional, genomic coordinate |
+| `track=` | optional free text, runs to end of line |
+
+`end - start` must equal the sequence length, and that is asserted per record.
+All sequences are taken to be + strand, so no reverse-complement handling
+exists anywhere in the pipeline. Contigs must be UCSC-style: a RefSeq
+(`NC_060925.1`) or GenBank (`CP068277.2`) name is rejected, because it would
+fail to join the T2T BAMs later.
+
+`lineage=`, `role=` and `mutation=` are also honoured as header keys, so a
+control or a pre-grouped lineage can be declared in the FASTA without a
+separate table. Any other `key=value` is kept verbatim in `notes`.
+
+`build_panel.py` holds the only FASTA-header parser in the repository. Do not
+add a second one: two parsers disagree eventually, and the disagreement
+surfaces as a coordinate that is wrong rather than as an error.
+
+### Mutant table
+
+Three columns. One row per mutant.
+
+| column | meaning |
+| - | - |
+| `name` | label for the mutant in results |
+| `oligo` | name of the parent sequence it derives from |
+| `mutation` | `30T>G`, or several separated by `;`: `30T>G;50A>C` |
+
+**Mutation positions are 1-based into the oligo**, because "the 30th base
+pair" is an ordinal, while locus coordinates are 0-based half-open. Two
+conventions in one panel is where off-by-one errors breed, so every
+mutation's reference base is checked against the parent. If `30T>G` names a
+position that is not `T`, the run fails and reports whether the 0-based
+reading would have matched:
+
+```
+ERROR: bad1: 30T>A says the reference base at position 30 of rank1 is 'T',
+but it is 'A'. Position 30 is 'A', but 31 is 'T': this looks like a 0-based
+position in a 1-based field.
+```
+
+Also fatal: an unknown parent, a position past the end of the parent, the
+same position mutated twice (the result would depend on order), a mutation
+changing a base to itself, and a mutant name colliding with a parent.
+
+Mutants carry no coordinates of their own. They take `lineage_id` = the
+parent and inherit its locus, which is the only correct placement for a
+sequence that no longer matches the genome. The genomic position of every
+change is still recorded in the summary JSON for audit.
