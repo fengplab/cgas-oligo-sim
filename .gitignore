@@ -221,3 +221,33 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# Nextflow and project outputs. The Python template above does not cover these,
+# and without them a pipeline run inside a clone stages its entire work tree:
+# work/ holds every task's scratch, .singularity/ holds container images
+# (gigabytes), and .nextflow.log is rewritten on every run.
+# ---------------------------------------------------------------------------
+# Root-anchored on purpose: an unanchored "work/" also matches
+# tests/examples/crossrun_mimic/work/, which must be tracked.
+/work/
+/.nextflow*
+/.singularity/
+/.pipcache/
+
+# Published outputs
+/results/
+/results_*/
+*.log
+
+# Generated test data and outputs. tests/examples/ IS tracked: those are
+# hand-written exemplars of the expected input shapes, including a stand-in
+# for chipseq_crossrun output. Everything under tests/fixtures/ and tests/out/
+# is produced by bin/make_synthetic.py and tests/run_tests.sh, so it is
+# regenerable and not committed.
+tests/fixtures/
+tests/out/
+tests/neg*/
+
+# OS
+.DS_Store
