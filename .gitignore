@@ -234,6 +234,7 @@ __marimo__/
 /.nextflow*
 /.singularity/
 /.pipcache/
+/utils/
 
 # Published outputs
 /results/
