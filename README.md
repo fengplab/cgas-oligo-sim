@@ -172,3 +172,63 @@ Slurm or Singularity. Synthetic data calibrates the method, never the biology.
 `tests/examples/` holds hand-written exemplars of the expected input shapes -
 an oligo FASTA, the lineage metadata TSV, a minimal-MEME motif file and an
 IUPAC consensus list. Those are tracked; generated fixtures are not.
+
+---
+
+## Importing from chipseq_crossrun
+
+Two modes. **Annotate** is the usual one when the panel is hand-picked.
+
+### Annotate — you supply the FASTA
+
+Your FASTA is authoritative for which sequences exist; crossrun is consulted
+only for coordinates and metadata.
+
+```bash
+python3 bin/import_crossrun.py \
+    --crossrun-work /path/to/crossrun_outdir/work \
+    --manifest      /path/to/manifest.tsv \
+    --fasta         my_selected_oligos.fasta \
+    --out-fasta oligos.fasta --out-metadata metadata.tsv --out-summary import.json
+```
+
+Each record is resolved in this order and the mechanism is recorded in
+`notes` as `match_method=`, so no coordinate is unexplained:
+
+| method | when | result |
+| - | - | - |
+| `name` | header names a peak, sequence identical | coordinates inherited, `role=wt` |
+| `name_mutant` | header names a peak, sequence differs | `role=mutant`, `lineage_id` = that peak, inherits the parent's coordinates |
+| `sequence` | sequence identical to exactly one peak | coordinates inherited (you renamed it) |
+| `sequence_rc` | reverse complement matches one peak | inherited, strand flipped to `-` |
+| `substring` | opt-in `--allow-substring`: unique substring of one peak | coordinates shifted by the offset |
+| `unmatched` | no match | kept, no coordinates; designed controls land here |
+
+A record matching several distinct peaks fails rather than being resolved by
+picking one.
+
+**If you hand-pick a mutant, include its wild-type parent in the FASTA too.**
+A `name_mutant` record points its `lineage_id` at the parent peak; if that
+parent is not in the panel, the lineage has no `wt` member, inherits no
+coordinates, and drops out of every genome-anchored step. `prepare_sequences.py`
+warns, but the panel is already wrong by then.
+
+Substring matching is off by default on purpose: inferring a shifted
+coordinate is something to ask for, not something to do quietly.
+
+### Harvest — take every peak
+
+Omit `--fasta` and every peak in `work/seqs/<sample>.fa` becomes an oligo.
+
+### What maps from where
+
+| crossrun output | this pipeline |
+| - | - |
+| `work/seqs/<sample>.fa` | sequences (harvest) or the lookup table (annotate) |
+| `work/seqs/<sample>.scan.bed` | genomic coordinates |
+| `manifest.tsv` | per-oligo metadata, carried into `notes` |
+| `work/motifs/family_reps.meme` | `convert_motifs.py --meme`, unchanged |
+
+Coordinates come from `scan.bed`, not the FASTA header: crossrun's
+`getfasta_canonical` strips the `::chrom:start-end` suffix that step 03's
+comment advertises, so the header cannot be relied on.
