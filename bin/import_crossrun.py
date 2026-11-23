@@ -29,13 +29,24 @@ Resolved in this order, and the mechanism used is recorded per record in
                   mutant, and it carries no coordinates of its own because it
                   inherits the parent's
   sequence        sequence is identical to exactly one peak (renamed record)
-  sequence_rc     reverse complement matches exactly one peak; strand flipped
   substring       opt-in (--allow-substring): the record is a unique substring
                   of one peak, and coordinates are shifted by the offset
   unmatched       no match; kept, with no coordinates, and listed in the summary
 
 A record matching several DISTINCT peaks is a hard failure, never resolved by
 picking one.
+
+Strand
+------
+Every sequence is taken to be on the + strand. crossrun extracts with bedtools
+getfasta and no -s, so its peak sequences are + strand by construction, and
+matched records are recorded with strand "+".
+
+A record that matches a peak ONLY by reverse complement is therefore a failure,
+not a match: under this assumption it means the record was revcomped somewhere
+upstream, or is not the peak it appears to be. The check is kept (rather than
+simply dropped) so the record is named and explained instead of silently
+falling through to "unmatched".
 
 Why coordinates come from the BED and not the FASTA header
 ----------------------------------------------------------
@@ -160,23 +171,33 @@ def resolve(sid: str, seq: str, peaks: list[dict], by_name: dict,
     if sid in by_name:
         pk = by_name[sid]
         if pk["seq"] == seq:
-            return {"method": "name", "peak": pk, "strand": ".", "offset": 0}
+            return {"method": "name", "peak": pk, "strand": "+", "offset": 0}
         # Named after a peak but not identical to it: a mutant of that peak.
         # It inherits the parent's coordinates through the lineage rather than
         # declaring its own, which is the only correct placement for a sequence
         # that no longer matches the genome.
-        return {"method": "name_mutant", "peak": pk, "strand": ".", "offset": None}
+        return {"method": "name_mutant", "peak": pk, "strand": "+", "offset": None}
 
-    for table, method, strand in ((by_seq, "sequence", "."),
-                                  (by_rc, "sequence_rc", "-")):
-        hits = table.get(seq, [])
-        distinct = {h["name"] for h in hits}
-        if len(distinct) > 1:
-            die(f"{sid}: {method} matches {len(distinct)} distinct crossrun peaks "
-                f"({sorted(distinct)[:4]}). Refusing to pick one; rename the "
-                "record to the peak you mean.")
-        if len(distinct) == 1:
-            return {"method": method, "peak": hits[0], "strand": strand, "offset": 0}
+    hits = by_seq.get(seq, [])
+    distinct = {h["name"] for h in hits}
+    if len(distinct) > 1:
+        die(f"{sid}: sequence matches {len(distinct)} distinct crossrun peaks "
+            f"({sorted(distinct)[:4]}). Refusing to pick one; rename the record "
+            "to the peak you mean.")
+    if len(distinct) == 1:
+        return {"method": "sequence", "peak": hits[0], "strand": "+", "offset": 0}
+
+    # Sequences are assumed to be + strand. A reverse-complement match means the
+    # record was flipped upstream, so it is reported rather than accepted.
+    rc_hits = by_rc.get(seq, [])
+    if rc_hits:
+        names = sorted({h["name"] for h in rc_hits})
+        die(f"{sid}: does not match any peak on the + strand, but its reverse "
+            f"complement matches {names[0]}"
+            + (f" (and {len(names) - 1} other peak(s))" if len(names) > 1 else "")
+            + ". Sequences are expected on the + strand, as crossrun extracts "
+              "them. Reverse-complement this record, or confirm it is the "
+              "sequence you meant.")
 
     if allow_substring:
         hits = [(pk, pk["seq"].find(seq)) for pk in peaks if seq in pk["seq"]]
@@ -189,9 +210,9 @@ def resolve(sid: str, seq: str, peaks: list[dict], by_name: dict,
             if pk["seq"].count(seq) > 1:
                 die(f"{sid}: occurs {pk['seq'].count(seq)} times within peak "
                     f"{pk['name']}; the offset is ambiguous.")
-            return {"method": "substring", "peak": pk, "strand": ".", "offset": off}
+            return {"method": "substring", "peak": pk, "strand": "+", "offset": off}
 
-    return {"method": "unmatched", "peak": None, "strand": ".", "offset": None}
+    return {"method": "unmatched", "peak": None, "strand": "+", "offset": None}
 
 
 def main() -> None:
@@ -254,8 +275,7 @@ def main() -> None:
         by_seq: dict[str, list[dict]] = {}
         by_rc: dict[str, list[dict]] = {}
         for pk in peaks:
-            by_seq.setdefault(pk["seq"], []).append(pk)
-            by_rc.setdefault(revcomp(pk["seq"]), []).append(pk)
+            by_seq.setdefault(pk["seq"], []).append(pk)  # retained for the warning below
 
         methods: dict[str, int] = {}
         for rec in SeqIO.parse(args.fasta, "fasta"):
@@ -289,7 +309,7 @@ def main() -> None:
                 off = m["offset"]
                 row = {"sequence_id": sid, "lineage_id": sid, "role": "wt",
                        "chrom": pk["chrom"], "start": pk["start"] + off,
-                       "end": pk["start"] + off + len(seq), "strand": m["strand"],
+                       "end": pk["start"] + off + len(seq), "strand": "+",
                        "mutation": "",
                        "notes": f"match_method={m['method']}; peak={pk['name']}; "
                                 f"crossrun_sample={pk['sample']}; {pk['notes']}"}
@@ -310,7 +330,7 @@ def main() -> None:
             meta_rows.append({
                 "sequence_id": sid, "lineage_id": sid, "role": "wt",
                 "chrom": pk["chrom"], "start": pk["start"], "end": pk["end"],
-                "strand": ".", "mutation": "",
+                "strand": "+", "mutation": "",
                 "notes": f"match_method=harvest; crossrun_sample={pk['sample']}; "
                          f"{pk['notes']}"})
             counts["kept"] += 1

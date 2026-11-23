@@ -25,10 +25,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 import pandas as pd
 from Bio import SeqIO
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from parse_fasta_header import HeaderError, notes_from, parse_header  # noqa: E402
 
 META_REQUIRED = ["sequence_id", "lineage_id", "role"]
 META_OPTIONAL = ["chrom", "start", "end", "strand", "mutation", "notes"]
@@ -45,9 +49,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fasta", required=True)
-    ap.add_argument("--metadata", required=True,
+    ap.add_argument("--metadata",
                     help="TSV: sequence_id, lineage_id, role [, chrom, start, end, "
-                         "strand, mutation, notes]")
+                         "strand, mutation, notes]. Optional when --from-headers "
+                         "is given, in which case it supplies only lineage_id, "
+                         "role and mutation overrides.")
+    ap.add_argument("--from-headers", action="store_true",
+                    help="take sequence_id, coordinates and summit from the FASTA "
+                         "headers: '>rank1 chr1:100-179 summit=140 track=...'. "
+                         "Coordinates are 0-based half-open and + strand.")
     ap.add_argument("--min-length", type=int, default=60,
                     help="human cGAS responds preferentially to DNA >45 bp; a "
                          "shorter oligo sits where it is built not to respond")
@@ -60,11 +70,56 @@ def main() -> None:
     ap.add_argument("--out-summary", required=True)
     args = ap.parse_args()
 
-    records = {r.id: str(r.seq).upper() for r in SeqIO.parse(args.fasta, "fasta")}
+    if not args.from_headers and not args.metadata:
+        die("give --metadata, or --from-headers to read coordinates out of the "
+            "FASTA headers (or both: headers for coordinates, the TSV for "
+            "lineage and role).")
+
+    records, header_rows = {}, []
+    for rec in SeqIO.parse(args.fasta, "fasta"):
+        seq = str(rec.seq).upper()
+        if args.from_headers:
+            raw = rec.description or rec.id
+            try:
+                h = parse_header(raw, seq_len=len(seq))
+            except HeaderError as exc:
+                die(f"{args.fasta}: {exc}")
+            if h["sequence_id"] in records:
+                die(f"duplicate oligo id '{h['sequence_id']}' in {args.fasta}")
+            records[h["sequence_id"]] = seq
+            header_rows.append({
+                "sequence_id": h["sequence_id"], "lineage_id": h["lineage_id"],
+                "role": h["role"], "chrom": h["chrom"], "start": str(h["start"]),
+                "end": str(h["end"]), "strand": h["strand"],
+                "mutation": h["mutation"], "notes": notes_from(h)})
+        else:
+            if rec.id in records:
+                die(f"duplicate sequence id '{rec.id}' in {args.fasta}")
+            records[rec.id] = seq
     if not records:
         die(f"{args.fasta} contains no sequences")
 
-    meta = pd.read_csv(args.metadata, sep="\t", dtype=str)
+    if args.from_headers:
+        meta = pd.DataFrame(header_rows).astype(str)
+        if args.metadata:
+            # The TSV supplies only what a header cannot: lineage grouping, role
+            # and the mutation description. Coordinates always come from the
+            # header, so the two can never disagree about position.
+            over = pd.read_csv(args.metadata, sep="\t", dtype=str)
+            if "sequence_id" not in over.columns:
+                die(f"{args.metadata} has no sequence_id column")
+            unknown = sorted(set(over["sequence_id"]) - set(meta["sequence_id"]))
+            if unknown:
+                die(f"{args.metadata} names sequence(s) absent from the FASTA: "
+                    + ", ".join(unknown[:10]))
+            meta = meta.set_index("sequence_id")
+            for _, r in over.iterrows():
+                for col in ("lineage_id", "role", "mutation"):
+                    if col in over.columns and pd.notna(r.get(col)) and r.get(col) != "":
+                        meta.loc[r["sequence_id"], col] = r[col]
+            meta = meta.reset_index()
+    else:
+        meta = pd.read_csv(args.metadata, sep="\t", dtype=str)
     missing_cols = [c for c in META_REQUIRED if c not in meta.columns]
     if missing_cols:
         die(f"{args.metadata} is missing required column(s): {', '.join(missing_cols)}")
@@ -135,12 +190,26 @@ def main() -> None:
             die(f"lineage {lid} has {len(wt)} members with role 'wt'; exactly one "
                 "parent defines the lineage's coordinates")
         has_wt = len(wt) == 1
+
+        # Coordinates for the lineage come from the wt member when it declares
+        # them, otherwise from any member that does. Members that declare their
+        # own keep them; the lineage value exists so that members declaring none
+        # (a mutant written without a locus) can inherit.
+        declared = g[g["chrom"].notna() & (g["chrom"].astype(str) != "")]
+        loci = {(r["chrom"], int(r["start"]), int(r["end"]))
+                for _, r in declared.iterrows()}
+        if len(loci) > 1:
+            die(f"lineage {lid} has members declaring different loci {sorted(loci)}. "
+                "Members of one lineage occupy the same reference interval; a "
+                "substitution mutant does not move. Fix the headers rather than "
+                "letting one of them win.")
         coords = {}
-        if has_wt and pd.notna(wt.iloc[0]["chrom"]):
-            coords = {"chrom": wt.iloc[0]["chrom"],
-                      "start": int(wt.iloc[0]["start"]),
-                      "end": int(wt.iloc[0]["end"]),
-                      "strand": wt.iloc[0]["strand"]}
+        if loci:
+            src = wt.iloc[0] if (has_wt and pd.notna(wt.iloc[0]["chrom"])
+                                 and str(wt.iloc[0]["chrom"]) != "") \
+                else declared.iloc[0]
+            coords = {"chrom": src["chrom"], "start": int(src["start"]),
+                      "end": int(src["end"]), "strand": src["strand"]}
         lengths = sorted(set(g["length"]))
         if len(lengths) > 1:
             warnings.append(
@@ -168,8 +237,14 @@ def main() -> None:
     # Propagate inherited coordinates onto every member.
     inherit = lineages.set_index("lineage_id")[["chrom", "start", "end", "strand"]]
     inherit = inherit.astype({"start": "Int64", "end": "Int64"})
-    df = df.drop(columns=["chrom", "start", "end", "strand"]).join(
-        inherit.rename(columns=lambda c: f"lineage_{c}"), on="lineage_id")
+    df = df.join(inherit.rename(columns=lambda c: f"lineage_{c}"), on="lineage_id")
+    # Effective position: what the record declares, else what it inherits.
+    for c in ("chrom", "start", "end", "strand"):
+        own = df[c].replace("", pd.NA)
+        df[f"effective_{c}"] = own.where(own.notna(), df[f"lineage_{c}"])
+    for c in ("start", "end"):
+        df[f"effective_{c}"] = pd.to_numeric(df[f"effective_{c}"],
+                                             errors="coerce").astype("Int64")
 
     if args.require_coords:
         un = sorted(lineages.loc[~lineages["genome_anchored"], "lineage_id"])
