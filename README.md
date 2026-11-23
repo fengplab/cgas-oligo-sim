@@ -207,7 +207,17 @@ The oligo name is the first token; the rest is annotation.
 
 `end - start` must equal the sequence length, and that is asserted per record.
 All sequences are taken to be + strand, so no reverse-complement handling
-exists anywhere in the pipeline.
+exists anywhere in the pipeline. Contigs must be UCSC-style: a RefSeq
+(`NC_060925.1`) or GenBank (`CP068277.2`) name is rejected, because it would
+fail to join the T2T BAMs later.
+
+`lineage=`, `role=` and `mutation=` are also honoured as header keys, so a
+control or a pre-grouped lineage can be declared in the FASTA without a
+separate table. Any other `key=value` is kept verbatim in `notes`.
+
+`build_panel.py` holds the only FASTA-header parser in the repository. Do not
+add a second one: two parsers disagree eventually, and the disagreement
+surfaces as a coordinate that is wrong rather than as an error.
 
 ### Mutant table
 

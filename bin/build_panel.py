@@ -3,6 +3,10 @@
 
 FASTA header
 ------------
+This file holds the only header parser in the repository. Do not add a second
+one anywhere: two parsers disagree eventually, and the disagreement surfaces
+as a coordinate that is wrong rather than as an error.
+
 The oligo name is the first whitespace-delimited token; the rest of the
 description carries the annotation:
 
@@ -12,6 +16,10 @@ description carries the annotation:
   locus   chr1:130352560-130352639   0-based half-open, + strand
   summit  130352599                  optional, genomic
   track   everything after 'track=', free text, may contain spaces and parens
+
+Also honoured, per parse_fasta_header.py: lineage=, role=, mutation=. Any
+other key=value is kept verbatim in notes. Contigs must be UCSC-style; a
+RefSeq or GenBank name is rejected, because it would fail to join the BAMs.
 
 All sequences are taken to be on the + strand, so no reverse-complement
 handling is applied anywhere.
@@ -50,33 +58,93 @@ import sys
 import pandas as pd
 from Bio import SeqIO
 
-LOCUS = re.compile(r"(?P<chrom>chr[0-9XYM]+|[A-Za-z0-9._]+):(?P<start>\d+)-(?P<end>\d+)")
-SUMMIT = re.compile(r"\bsummit=(\d+)")
-TRACK = re.compile(r"\btrack=(.*)$")
 MUT = re.compile(r"^(?P<pos>\d+)(?P<ref>[ACGT])>(?P<alt>[ACGT])$")
 BASES = set("ACGT")
+
+
+# A key's value runs to the next " key=" or to end of line, so free-text
+# values containing spaces (track=...) survive.
+KV = re.compile(r"(\w+)=(.*?)(?=\s+\w+=|$)")
+LOCUS = re.compile(r"^(?P<chrom>[^\s:]+):(?P<start>\d+)-(?P<end>\d+)$")
+UCSC = re.compile(r"^chr([0-9]+|X|Y|M)$")
+
+
+class HeaderError(ValueError):
+    pass
+
+
+def parse_header(header: str, seq_len: int | None = None) -> dict:
+    """Return the fields of one FASTA header. Raises HeaderError on anything odd."""
+    text = header[1:] if header.startswith(">") else header
+    text = text.strip()
+    if not text:
+        raise HeaderError("empty header")
+
+    parts = text.split(None, 2)
+    oligo_id = parts[0]
+    out = {"sequence_id": oligo_id, "lineage_id": oligo_id, "role": "wt",
+           "chrom": None, "start": None, "end": None, "strand": "+",
+           "summit": None, "mutation": "", "extra": {}}
+
+    if len(parts) == 1:
+        raise HeaderError(f"'{oligo_id}': header has no chrom:start-end token")
+
+    m = LOCUS.match(parts[1])
+    if not m:
+        raise HeaderError(f"'{oligo_id}': second token '{parts[1]}' is not "
+                          "chrom:start-end")
+    chrom, start, end = m["chrom"], int(m["start"]), int(m["end"])
+    if not UCSC.match(chrom):
+        raise HeaderError(f"'{oligo_id}': contig '{chrom}' is not UCSC-style. A "
+                          "RefSeq (NC_0609xx.1) or GenBank (CP0682xx.2) name here "
+                          "would fail to join the BAMs later.")
+    if end <= start:
+        raise HeaderError(f"'{oligo_id}': interval [{start},{end}) is empty or "
+                          "reversed")
+    if seq_len is not None and (end - start) != seq_len:
+        raise HeaderError(
+            f"'{oligo_id}': header interval [{start},{end}) spans {end - start} bp "
+            f"but the sequence is {seq_len} bp. Coordinates are 0-based half-open; "
+            "do not reconcile this by shifting one until you know which is wrong.")
+    out.update(chrom=chrom, start=start, end=end)
+
+    for key, val in KV.findall(parts[2] if len(parts) > 2 else ""):
+        val = val.strip()
+        k = key.lower()
+        if k == "summit":
+            try:
+                s = int(val)
+            except ValueError:
+                raise HeaderError(f"'{oligo_id}': summit='{val}' is not an integer")
+            if not start <= s < end:
+                raise HeaderError(
+                    f"'{oligo_id}': summit {s} lies outside the interval "
+                    f"[{start},{end}). Either the summit or the interval is wrong, "
+                    "and a summit-anchored window built from it would be silently "
+                    "misplaced.")
+            out["summit"] = s
+        elif k == "lineage":
+            out["lineage_id"] = val
+        elif k == "role":
+            out["role"] = val
+        elif k == "mutation":
+            out["mutation"] = val
+        else:
+            out["extra"][key] = val
+    return out
+
+
+def notes_from(parsed: dict) -> str:
+    bits = []
+    if parsed["summit"] is not None:
+        bits.append(f"summit={parsed['summit']}")
+    bits += [f"{k}={v}" for k, v in parsed["extra"].items()]
+    return "; ".join(bits)
 
 
 def die(msg: str) -> None:
     sys.stderr.write(f"ERROR: {msg}\n")
     sys.exit(1)
-
-
-def parse_header(desc: str, name: str) -> dict:
-    """Pull locus, summit and track out of a FASTA description line."""
-    rest = desc[len(name):].strip() if desc.startswith(name) else desc
-    m = LOCUS.search(rest)
-    if not m:
-        die(f"{name}: no locus found in the header. Expected something like "
-            f"'chr1:130352560-130352639' after the name. Got: {rest!r}")
-    s, e = int(m.group("start")), int(m.group("end"))
-    if e <= s:
-        die(f"{name}: locus {m.group('chrom')}:{s}-{e} is empty or inverted")
-    summit = SUMMIT.search(rest)
-    track = TRACK.search(rest)
-    return {"chrom": m.group("chrom"), "start": s, "end": e,
-            "summit": int(summit.group(1)) if summit else None,
-            "track": track.group(1).strip() if track else ""}
 
 
 def apply_mutations(parent_seq: str, spec: str, mut_name: str,
@@ -128,35 +196,30 @@ def main() -> None:
 
     parents, records, meta = {}, [], []
     for rec in SeqIO.parse(args.fasta, "fasta"):
-        name = rec.id
         seq = str(rec.seq).upper()
-        if name in parents:
-            die(f"duplicate oligo name in the FASTA: {name}")
         bad = sorted(set(seq) - BASES)
         if bad:
-            die(f"{name} contains non-ACGT character(s) {bad}. Degenerate or "
+            die(f"{rec.id} contains non-ACGT character(s) {bad}. Degenerate or "
                 "masked bases cannot be built into a CG structure.")
         if not args.min_length <= len(seq) <= args.max_length:
-            die(f"{name} is {len(seq)} bp, outside "
+            die(f"{rec.id} is {len(seq)} bp, outside "
                 f"[{args.min_length}, {args.max_length}]")
-        h = parse_header(rec.description, name)
-        width = h["end"] - h["start"]
-        if width != len(seq):
-            die(f"{name}: locus {h['chrom']}:{h['start']}-{h['end']} spans {width} bp "
-                f"but the sequence is {len(seq)} bp. Coordinates are 0-based "
-                "half-open; do not reconcile this by shifting one until you know "
-                "which is wrong.")
-        if h["summit"] is not None and not h["start"] <= h["summit"] < h["end"]:
-            die(f"{name}: summit {h['summit']} lies outside the locus "
-                f"[{h['start']}, {h['end']})")
+        # Header parsing, the locus/length check, the UCSC contig assertion and
+        # the summit bounds check all live in parse_fasta_header.
+        try:
+            h = parse_header(rec.description or rec.id, seq_len=len(seq))
+        except HeaderError as exc:
+            die(f"{args.fasta}: {exc}")
+        name = h["sequence_id"]
+        if name in parents:
+            die(f"duplicate oligo name in the FASTA: {name}")
         parents[name] = {"seq": seq, **h}
         records.append((name, seq))
         meta.append({
-            "sequence_id": name, "lineage_id": name, "role": "wt",
-            "chrom": h["chrom"], "start": h["start"], "end": h["end"], "strand": "+",
-            "mutation": "",
-            "notes": (f"summit={h['summit']}; " if h["summit"] is not None else "")
-                     + (f"track={h['track']}" if h["track"] else ""),
+            "sequence_id": name, "lineage_id": h["lineage_id"], "role": h["role"],
+            "chrom": h["chrom"], "start": h["start"], "end": h["end"],
+            "strand": h["strand"], "mutation": h["mutation"],
+            "notes": notes_from(h),
         })
 
     if not parents:
