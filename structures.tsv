@@ -30,9 +30,16 @@
 # 6CT9 and 6CTA were crystallised carrying the mouse-like N187/R195, which sit
 # in the DNA-binding region under study. 'auto' reverts them to the reference
 # and records every change in work/struct/wt_reversions.tsv.
-structure_id	pdb_id	chain	cif_path	revert
-cgas_apo_human	4MKP	A	FILL_IN/4mkp.cif	auto
-cgas_dna_human	6CT9	A	FILL_IN/6ct9.cif	auto
+# chain: comma-separated, or 'all' for every protein chain that survives
+#   stripping. assembly: blank = deposited coordinates; otherwise the assembly
+#   id to expand first (check _pdbx_struct_assembly in the mmCIF - the id is
+#   usually '1', but confirm rather than assume).
+# Non-protein chains are ALWAYS dropped, so 6CT9's crystallographic 17-mer
+# (chains B/C) and its Zn do not reach the CG build.
+structure_id	pdb_id	chain	cif_path	revert	assembly
+cgas_apo_human	4MKP	all	FILL_IN/4mkp.cif	auto	
+cgas_dna_monomer	6CT9	all	FILL_IN/6ct9.cif	auto	
+cgas_dna_dimer	6CT9	all	FILL_IN/6ct9.cif	auto	FILL_IN_ASSEMBLY_ID
 #cgas_dna_atp_human	6CTA	A	FILL_IN/6cta.cif	auto
 #cgas_sulfate_human	4O69	A	FILL_IN/4o69.cif	auto
 #
