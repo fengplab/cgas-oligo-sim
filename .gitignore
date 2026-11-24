@@ -236,6 +236,25 @@ __marimo__/
 /.pipcache/
 /utils/
 
+# Site-specific configuration, kept out of the repo on purpose. nextflow.config
+# and structures.tsv were removed from version control because they hold values
+# that are specific to one cluster and one set of downloads.
+#
+# NOTE: Nextflow auto-loads ./nextflow.config from the launch directory, and
+# does NOT look in config/. A config kept here must be passed explicitly:
+#     nextflow run main.nf -c config/nextflow.config -profile slurm
+# or symlinked into the launch directory. Root-anchored, for the same reason
+# /work/ is: an unanchored config/ would also swallow any nested config/.
+/config/
+
+# The root copies are ignored too, so keeping a working nextflow.config at the
+# launch directory - a copy or a symlink into config/ - does not show up as
+# untracked noise and cannot be committed back by accident. Root-anchored:
+# tests/fixtures/structures.tsv is generated and already ignored, and no other
+# structures.tsv should be caught.
+/nextflow.config
+/structures.tsv
+
 # Published outputs
 /results/
 /results_*/
