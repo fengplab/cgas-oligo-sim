@@ -1,0 +1,68 @@
+# Conda environment for the cgas-oligo-sim analysis scripts and test suite.
+#
+# Works on the cluster (linux-64) and the laptop (osx-arm64): every package
+# below was confirmed present on conda-forge for BOTH subdirs, so one file
+# serves both. No x86 emulation is needed on Apple silicon.
+#
+#   conda env create -f environment.yml
+#   conda activate cgas-oligo-sim
+#   bash tests/run_tests.sh
+#
+# conda-forge only, with nodefaults: the `defaults` channel carries separate
+# Anaconda terms of use, and mixing channels is a common source of broken
+# solves on shared systems.
+#
+# Version floors are the versions the suite was actually run against in a
+# cloud session (recorded below). Floors rather than exact pins, so the solve
+# does not break on a platform where one exact build is missing. For a locked,
+# reproducible environment, create this once and then freeze it:
+#
+#   conda list --explicit > environment.lock.linux-64.txt
+#   conda env create --file environment.lock.linux-64.txt --name cgas-oligo-sim
+#
+# A lockfile is per-platform, so generate one per machine you run on.
+#
+# Verified-against versions (python 3.13.18):
+#   numpy 2.5.3   pandas 3.0.5   scipy 1.18.1   matplotlib 3.11.2
+#   biopython 1.88   gemmi 0.7.5   MDAnalysis 2.11.0
+#
+# NOT included, deliberately:
+#   nextflow, julia, GENESIS - these come from `module load` on the cluster,
+#     not from this environment, and the test suite does not invoke them.
+#   pytest - the suite is tests/run_tests.sh, a bash script. There is no
+#     pytest collection to run.
+#   openpyxl - no module imports it. Add it only if you need to re-read the
+#     Herzner et al. supplementary oligo spreadsheet.
+
+name: cgas-oligo-sim
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.13
+
+  # Core numerics. scipy is used for cKDTree in the occupancy contact search.
+  - numpy>=2.5
+  - pandas>=2.2
+  - scipy>=1.14
+
+  # Figures. matplotlib-base, not matplotlib: make_figures.py sets the Agg
+  # backend before importing pyplot, so no Qt/GTK stack is required and a
+  # headless compute node is fine.
+  - matplotlib-base>=3.9
+
+  # Structure handling.
+  #   gemmi     - mmCIF parsing and writing in prepare_structures.py
+  #   biopython - FASTA reading, and the pairwise aligner that finds
+  #               crystallisation mutations against the reference sequence
+  - gemmi>=0.7
+  - biopython>=1.84
+
+  # Trajectory reading in extract_occupancy.py, for GENESIS atdyn DCD output.
+  # NOTE: the test suite does not exercise this path - the fixtures are .npz -
+  # so a broken MDAnalysis install will pass the tests and fail on real data.
+  # Check it explicitly:
+  #   python -c "from MDAnalysis.coordinates.DCD import DCDReader; print('ok')"
+  - mdanalysis>=2.9

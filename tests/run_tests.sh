@@ -20,6 +20,10 @@ python3 bin/call_sites.py \
 
 # Fixture-only: rekey synthetic poses onto the called site ids, matched by
 echo
+echo "--- environment.yml matches the code's imports ---"
+python3 tests/check_environment.py
+
+echo
 echo "--- prepare_structures: find crystallisation mutations by ALIGNMENT ---"
 # The fixture carries K186N and L195R relative to its reference. No mutation
 # table is given to the script; it must recover both from the alignment, and
