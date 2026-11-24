@@ -165,7 +165,14 @@ def main() -> None:
     out = Path(args.out_dir)
     (out / "structures").mkdir(parents=True, exist_ok=True)
 
-    ss = pd.read_csv(args.samplesheet, sep="\t", dtype=str).fillna("")
+    # comment="#" so a samplesheet can carry its own provenance: which PDB
+    # entry each row is, what was verified, and why a row is disabled. A
+    # structure choice that is not written down beside the row gets lost.
+    ss = pd.read_csv(args.samplesheet, sep="\t", dtype=str,
+                     comment="#").fillna("")
+    ss = ss[ss["structure_id"].astype(str).str.strip() != ""]
+    if ss.empty:
+        die(f"{args.samplesheet} has no active rows (every row commented out?)")
     for col in ("structure_id", "chain", "cif_path"):
         if col not in ss.columns:
             die(f"samplesheet is missing required column {col!r}")
