@@ -38,14 +38,14 @@ workflow {
     requireParam('outdir',         params.outdir,
                  'Publish directory on NFS, so results open from the laptop.')
 
-    ch_occupancy = Channel.fromPath(params.occupancy,      checkIfExists: true)
-    ch_null      = Channel.fromPath(params.null_occupancy, checkIfExists: true)
-    ch_contacts  = Channel.fromPath(params.contacts,       checkIfExists: true)
+    ch_occupancy = channel.fromPath(params.occupancy,      checkIfExists: true)
+    ch_null      = channel.fromPath(params.null_occupancy, checkIfExists: true)
+    ch_contacts  = channel.fromPath(params.contacts,       checkIfExists: true)
 
     CALL_SITES(ch_occupancy, ch_null)
 
     // Site identity comes from the samplesheet, never from filename order.
-    ch_poses = Channel
+    ch_poses = channel
         .fromPath(params.poses, checkIfExists: true)
         .splitCsv(header: true, sep: '\t')
         .map { row ->
@@ -72,14 +72,18 @@ workflow {
         MAKE_FIGURES.out.figures.collect()
     )
 
-    ch_versions = CALL_SITES.out.versions
+    // No emit section: this is the entry workflow, and only a NAMED workflow may
+    // emit. The outputs this used to declare - CALL_SITES.out.sites and
+    // BUILD_INDEX.out.index - still reach the user, via the process-scope
+    // publishDir default in nextflow.config (mode 'copy', to params.outdir on
+    // NFS). That default is global, so grepping this module for publishDir
+    // finds nothing; it is set once in nextflow.config for every process.
+    // If the pipeline is ever composed into another workflow or given a
+    // workflow-level test, move this body into a named workflow and put the
+    // emit section there.
+    CALL_SITES.out.versions
         .mix(CLUSTER_POSES.out.versions)
         .mix(MAKE_FIGURES.out.versions)
         .mix(BUILD_INDEX.out.versions)
         .collectFile(name: 'versions.yml', storeDir: "${params.outdir}/pipeline_info")
-
-    emit:
-    sites    = CALL_SITES.out.sites
-    index    = BUILD_INDEX.out.index
-    versions = ch_versions
 }
