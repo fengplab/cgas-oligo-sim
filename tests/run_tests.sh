@@ -20,6 +20,81 @@ python3 bin/call_sites.py \
 
 # Fixture-only: rekey synthetic poses onto the called site ids, matched by
 echo
+echo "--- prepare_structures: find crystallisation mutations by ALIGNMENT ---"
+# The fixture carries K186N and L195R relative to its reference. No mutation
+# table is given to the script; it must recover both from the alignment, and
+# must refuse a reference that is the wrong protein.
+python3 tests/make_structure_fixture.py
+python3 bin/prepare_structures.py --samplesheet tests/fixtures/structures.tsv \
+    --reference tests/fixtures/structure_reference.fasta --out-dir tests/out/struct
+python3 - <<'PYCHK'
+import sys
+import gemmi
+import pandas as pd
+rv = pd.read_csv("tests/out/struct/wt_reversions.tsv", sep="\t")
+got = {(int(r.auth_seq), r["from"], r["to"]) for _, r in rv.iterrows()}
+want = {(186, "ASN(N)", "LYS(K)"), (195, "ARG(R)", "LEU(L)")}
+if got != want:
+    sys.exit(f"FAIL: reversions {sorted(got)} != {sorted(want)}")
+st = gemmi.read_structure("tests/out/struct/structures/FIXWT.wt.cif")
+for res in st[0]["A"]:
+    if res.seqid.num in (186, 195):
+        names = sorted(a.name for a in res)
+        if names != ["C", "CA", "CB", "N", "O"]:
+            sys.exit(f"FAIL: residue {res.seqid.num} kept {names}; strip policy "
+                     "must leave only backbone + CB so no contact is derived "
+                     "from a sidechain the wild-type residue lacks")
+print("  OK K186->LYS, L195->LEU, sidechains stripped to backbone+CB")
+PYCHK
+
+echo "--- prepare_structures: the wrong reference must FAIL, not revert blindly ---"
+printf '>unrelated\nMKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG\n' \
+    > tests/out/wrong_reference.fasta
+if python3 bin/prepare_structures.py --samplesheet tests/fixtures/structures.tsv \
+    --reference tests/out/wrong_reference.fasta --out-dir tests/out/struct_wrong 2>/dev/null; then
+    echo "FAIL: an unrelated reference sequence was accepted"; exit 1
+fi
+echo "  OK rejected"
+
+echo
+echo "--- enumerate_arms: PWMcos arms appear ONLY when motifs are passed ---"
+printf 'name\nrank1\nrank2\nrank3\n' > tests/out/arm_panel.tsv
+printf 'structure_id\nS1\nS2\n' > tests/out/arm_structures2.tsv
+printf 'structure_id\nS1\n' > tests/out/arm_structures1.tsv
+printf 'family\nfamA\nfamB\n' > tests/out/arm_motifs.tsv
+
+python3 bin/enumerate_arms.py --panel tests/out/arm_panel.tsv \
+    --structures tests/out/arm_structures1.tsv --partners TFAM \
+    --replicates 10 --shuffles 4 --null-replicates 3 \
+    --out-jobs tests/out/jobs_nomotif.tsv --out-arms tests/out/arms_nomotif.tsv \
+    --out-summary tests/out/arms_nomotif.json
+
+python3 bin/enumerate_arms.py --panel tests/out/arm_panel.tsv \
+    --structures tests/out/arm_structures2.tsv --motifs tests/out/arm_motifs.tsv \
+    --partners TFAM,HMGB1 --replicates 10 --shuffles 4 --null-replicates 3 \
+    --out-jobs tests/out/jobs_full.tsv --out-arms tests/out/arms_full.tsv \
+    --out-summary tests/out/arms_full.json
+python3 - <<'PYCHK'
+import json, sys
+import pandas as pd
+a = json.load(open("tests/out/arms_nomotif.json"))
+if a["pwmcos_arms"] != 0 or not a["pwmcos_skipped_no_motifs"]:
+    sys.exit("FAIL: PWMcos arms generated with no motifs passed")
+if a["arms"] != ["baseline", "partner:TFAM"]:
+    sys.exit(f"FAIL: unexpected arms without motifs: {a['arms']}")
+b = json.load(open("tests/out/arms_full.json"))
+if b["pwmcos_arms"] != 2 or not b["multibasin_arm"]:
+    sys.exit(f"FAIL: expected 2 PWMcos arms and a multibasin arm, got {b}")
+j = pd.read_csv("tests/out/jobs_full.tsv", sep="\t")
+if j.job_id.duplicated().any():
+    sys.exit("FAIL: duplicate job_id would make jobs overwrite each other")
+if j.seed.nunique() != len(j):
+    sys.exit("FAIL: seeds are not unique per job")
+print(f"  OK {a['n_arms']} arms without motifs, {b['n_arms']} with; "
+      f"{len(j)} unique jobs")
+PYCHK
+
+echo
 echo "--- extract_occupancy: synthetic trajectory with a known register ---"
 # The fixture puts one cGAS copy over nucleotides 28-45, so the register the
 # extractor reports must be their midpoint, 36. A 10 A cutoff in 3D also
