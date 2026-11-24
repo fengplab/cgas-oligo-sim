@@ -57,11 +57,16 @@ def conda_deps(path: str) -> set[str]:
 
 
 def imported(paths: list[str]) -> dict[str, set[str]]:
+    # A module that exists as a .py file in this repo is a sibling import, not
+    # a package to install. tests/check_dupchain.py imports its fixture builder
+    # that way, and without this the check demands a conda package named after
+    # a local file.
+    local = {pathlib.Path(p).stem for p in paths}
     out: dict[str, set[str]] = {}
     for f in paths:
         for m in re.findall(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)",
                             pathlib.Path(f).read_text(), re.M):
-            if m in STDLIB:
+            if m in STDLIB or m in local:
                 continue
             out.setdefault(IMPORT_TO_CONDA.get(m, m), set()).add(f)
     return out

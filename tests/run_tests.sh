@@ -77,6 +77,12 @@ for res in st[0]["A"]:
 print("  OK K186->LYS, L195->LEU, sidechains stripped to backbone+CB")
 PYCHK
 
+echo "--- prepare_structures: duplicate chain names must not delete the protein ---"
+# gemmi splits one mmCIF auth chain into polymer/het/water Chain objects that
+# share a name, so a real entry yields two chains called "A". remove_chain()
+# deletes the first match by name, which deleted the protein.
+python3 tests/check_dupchain.py
+
 echo "--- prepare_structures: the wrong reference must FAIL, not revert blindly ---"
 printf '>unrelated\nMKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG\n' \
     > tests/out/wrong_reference.fasta
