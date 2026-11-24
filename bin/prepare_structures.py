@@ -257,15 +257,35 @@ def main() -> None:
         # Drop everything that is not polypeptide. See the module docstring:
         # leaving the crystallographic DNA in would put it into the CG system.
         st.remove_ligands_and_waters()
-        # Decide first, remove second. Removing chains while iterating over the
-        # model skips chains and reports the wrong names.
+
+        # gemmi presents one mmCIF auth chain as SEVERAL Chain objects that
+        # share a name: the polymer part, then the het part, then water. After
+        # the line above the het and water parts are empty but still present,
+        # so a real 6CT9 model holds two chains both called "A" - one with 348
+        # residues and one with 0.
+        #
+        # remove_chain() takes a NAME and deletes the FIRST match. Dropping the
+        # empty "A" therefore deleted the PROTEIN, every protein chain went,
+        # and the run died with "no protein chain left to prepare". No
+        # synthetic fixture caught it, because a structure built with gemmi
+        # has one Chain object per name.
+        #
+        # Dropping the emptied parts and merging what remains makes names
+        # unique again. Removal below is by INDEX, so a duplicate name can
+        # never delete the wrong chain even if one slips through.
+        st.remove_empty_chains()
+        st.merge_chain_parts()
+
         dropped_chains = []
         for model in st:
-            to_drop = [c.name for c in model
-                       if not ({r.name for r in c} & set(THREE_TO_ONE))]
-            for name in to_drop:
-                model.remove_chain(name)
-            dropped_chains.extend(to_drop)
+            drop_idx, names = [], []
+            for i, c in enumerate(model):
+                if not ({r.name for r in c} & set(THREE_TO_ONE)):
+                    drop_idx.append(i)
+                    names.append(c.name)
+            for i in reversed(drop_idx):
+                del model[i]
+            dropped_chains.extend(names)
         st.setup_entities()
 
         wanted = [c.strip() for c in chain.split(",") if c.strip()]
@@ -307,9 +327,11 @@ def main() -> None:
                 + (f"; non-protein chain(s) {dropped_chains} were dropped."
                    if dropped_chains else ".")
                 + hint)
+        # By index, for the same reason as above.
         for model in st:
-            for name in [c.name for c in model if c.name not in keep]:
-                model.remove_chain(name)
+            for i in reversed([i for i, c in enumerate(model)
+                               if c.name not in keep]):
+                del model[i]
         st.setup_entities()
 
         per_chain, subs, residues_all = [], [], []
