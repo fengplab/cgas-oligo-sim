@@ -1,3 +1,16 @@
+# TEMPLATE. Copy to config/structures.tsv (gitignored) and fill cif_path:
+#     mkdir -p config && cp conf/structures.template.tsv config/structures.tsv
+#     python3 bin/prepare_structures.py --samplesheet config/structures.tsv \
+#         --reference <Q8N884.fasta> --out-dir work/struct
+#
+# --reference wants the cGAS PROTEIN sequence (UniProt Q8N884), NOT the genome
+# FASTA. A, C, G and T are valid amino-acid letters, so a nucleotide file is a
+# syntactically valid protein; the script checks composition to catch it.
+#
+# Coordinates come from https://files.rcsb.org/download/<ID>.cif - the archive
+# mmCIF. Not the structure factors (*-sf.cif: reflections, no atoms) and not a
+# pre-generated assembly file (symmetry already applied, nothing left to expand).
+#
 # cGAS structures for cgas-oligo-sim. Fill cif_path, then run:
 #   python3 bin/prepare_structures.py --samplesheet structures.tsv \
 #       --reference <human_cGAS_Q8N884.fasta> --out-dir work/struct
@@ -39,7 +52,20 @@
 structure_id	pdb_id	chain	cif_path	revert	assembly
 cgas_apo_human	4MKP	all	FILL_IN/4mkp.cif	auto	
 cgas_dna_monomer	6CT9	all	FILL_IN/6ct9.cif	auto	
-cgas_dna_dimer	6CT9	all	FILL_IN/6ct9.cif	auto	FILL_IN_ASSEMBLY_ID
+#
+# DIMER ROW DISABLED. 6CT9 declares NO dimeric assembly - every declared
+# assembly is monomeric - so the `assembly` column cannot produce the 2:2
+# complex from this entry, and a row pointing at an assembly id would fail.
+# The 2:2 is real (Zhou et al. 2018 describe it, each monomer using two
+# DNA-binding surfaces) but it forms across crystal symmetry in space group
+# P 61 2 2 and was not deposited as a biological assembly. Generating it means
+# choosing the correct symmetry mate out of 12 operations, which is a
+# structural decision, not something to infer.
+#
+# Consequence: the monomer rows above are the apo-versus-bound comparison and
+# are unaffected, but the multi-cGAS arm is blocked. A Go model from a single
+# chain has no inter-cGAS native contacts, so copies cannot dimerise.
+#cgas_dna_dimer	6CT9	all	FILL_IN/6ct9.cif	auto	FILL_IN_ASSEMBLY_ID
 #cgas_dna_atp_human	6CTA	A	FILL_IN/6cta.cif	auto
 #cgas_sulfate_human	4O69	A	FILL_IN/4o69.cif	auto
 #

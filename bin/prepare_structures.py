@@ -81,24 +81,55 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
+# A, C, G and T are all valid amino-acid letters (Ala, Cys, Gly, Thr), so a
+# nucleotide FASTA passes a protein-alphabet check in silence. "Genome FASTA
+# handed to --reference" is therefore an error the alphabet cannot catch, and
+# it is an easy one to make because the genome is the other reference this
+# pipeline uses. Composition catches it instead.
+NUCLEOTIDE_LETTERS = set("ACGTUN")
+MAX_REFERENCE_LEN = 10_000
+
+
 def read_reference(path: str) -> str:
-    seq, seen = [], 0
+    records: list[tuple[str, list[str]]] = []
     with open(path) as fh:
         for line in fh:
             line = line.strip()
             if line.startswith(">"):
-                seen += 1
-                if seen > 1:
-                    break
-                continue
-            seq.append(line)
+                records.append((line[1:].split()[0] if len(line) > 1 else "", []))
+            elif records:
+                records[-1][1].append(line)
+    if not records:
+        die(f"{path} contains no FASTA record")
+    if len(records) > 1:
+        names = ", ".join(n for n, _ in records[:5])
+        die(f"{path} holds {len(records)} FASTA records ({names}"
+            f"{' ...' if len(records) > 5 else ''}). This must be a SINGLE "
+            "protein sequence: silently aligning against whichever record "
+            "comes first is how a structure gets compared to the wrong "
+            "protein. Extract the one you want first.")
+
+    seq = "".join(records[0][1]).upper()
     if not seq:
-        die(f"{path} contains no sequence")
-    s = "".join(seq).upper()
-    bad = set(s) - set(ONE_TO_THREE)
+        die(f"{path} record {records[0][0]!r} has no sequence")
+
+    nuc = sum(c in NUCLEOTIDE_LETTERS for c in seq) / len(seq)
+    if len(seq) > 50 and nuc > 0.9:
+        die(f"{path} looks like a NUCLEOTIDE sequence, not a protein: "
+            f"{nuc:.0%} of its {len(seq):,} characters are A/C/G/T/U/N. A, C, "
+            "G and T are also valid amino-acid letters, so the alphabet alone "
+            "cannot catch this. --reference wants the canonical cGAS PROTEIN "
+            "sequence (UniProt Q8N884), not the genome FASTA.")
+    if len(seq) > MAX_REFERENCE_LEN:
+        die(f"{path} record {records[0][0]!r} is {len(seq):,} residues, above "
+            f"{MAX_REFERENCE_LEN:,}. A cGAS reference is ~500 residues. "
+            "Something this long is a chromosome or a concatenation, and "
+            "aligning against it would hang rather than fail.")
+
+    bad = sorted(set(seq) - set(ONE_TO_THREE))
     if bad:
-        die(f"reference sequence has non-standard residue letter(s): {sorted(bad)}")
-    return s
+        die(f"reference sequence has non-standard residue letter(s): {bad}")
+    return seq
 
 
 def chain_residues(st, chain_name: str):
@@ -248,7 +279,34 @@ def main() -> None:
         else:
             keep = present
         if not keep:
-            die(f"{sid}: no protein chain left to prepare")
+            n_models = len(st)
+            n_chains = sum(1 for m in st for _ in m)
+            n_res = sum(len(c) for m in st for c in m)
+            n_atoms = sum(len(r) for m in st for c in m for r in c)
+            hint = ""
+            if n_atoms == 0:
+                # Zero here does NOT prove the file has no coordinates: a file
+                # gemmi cannot parse reports zero just as an atom-free one
+                # does. Both possibilities get named, and the check that tells
+                # them apart is grep against the file itself.
+                hint = (
+                    "\n       Zero atoms means one of two things, and they are "
+                    "not the same problem:\n"
+                    "         (a) the file genuinely has no coordinates - a "
+                    "structure-factor file (*-sf.cif) holds reflections and no "
+                    "atoms, and a failed download can leave an error page "
+                    "carrying a .cif name;\n"
+                    "         (b) the file HAS coordinates that gemmi could not "
+                    "parse.\n"
+                    f"       Tell them apart:  grep -c '^ATOM' {cif}\n"
+                    "       A nonzero count means (b), not (a). Coordinates "
+                    "come from https://files.rcsb.org/download/<ID>.cif")
+            die(f"{sid}: no protein chain left to prepare. {cif} parsed to "
+                f"{n_models} model(s), {n_chains} chain(s), {n_res} "
+                f"residue(s), {n_atoms} atom(s)"
+                + (f"; non-protein chain(s) {dropped_chains} were dropped."
+                   if dropped_chains else ".")
+                + hint)
         for model in st:
             for name in [c.name for c in model if c.name not in keep]:
                 model.remove_chain(name)
