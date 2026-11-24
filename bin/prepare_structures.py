@@ -285,13 +285,22 @@ def main() -> None:
             n_atoms = sum(len(r) for m in st for c in m for r in c)
             hint = ""
             if n_atoms == 0:
+                # Zero here does NOT prove the file has no coordinates: a file
+                # gemmi cannot parse reports zero just as an atom-free one
+                # does. Both possibilities get named, and the check that tells
+                # them apart is grep against the file itself.
                 hint = (
-                    "\n       Those counts are zero, so the file holds no "
-                    "atomic coordinates. A structure-factor file (*-sf.cif) "
-                    "contains reflections and no atoms, and a failed download "
-                    "can leave an error page carrying a .cif name. Check with "
-                    "grep -c '^ATOM' on it, and take coordinates from "
-                    "https://files.rcsb.org/download/<ID>.cif")
+                    "\n       Zero atoms means one of two things, and they are "
+                    "not the same problem:\n"
+                    "         (a) the file genuinely has no coordinates - a "
+                    "structure-factor file (*-sf.cif) holds reflections and no "
+                    "atoms, and a failed download can leave an error page "
+                    "carrying a .cif name;\n"
+                    "         (b) the file HAS coordinates that gemmi could not "
+                    "parse.\n"
+                    f"       Tell them apart:  grep -c '^ATOM' {cif}\n"
+                    "       A nonzero count means (b), not (a). Coordinates "
+                    "come from https://files.rcsb.org/download/<ID>.cif")
             die(f"{sid}: no protein chain left to prepare. {cif} parsed to "
                 f"{n_models} model(s), {n_chains} chain(s), {n_res} "
                 f"residue(s), {n_atoms} atom(s)"
