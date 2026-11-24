@@ -43,10 +43,19 @@ def die(msg: str) -> None:
     sys.exit(1)
 
 
-def read_ids(path: str, col: str, what: str) -> list[str]:
+def read_ids(path: str, cols: tuple[str, ...], what: str) -> list[str]:
+    """IDs from the first of `cols` the file actually has.
+
+    The panel is read from build_panel.py's metadata, whose key is
+    `sequence_id` - the same key extract_occupancy.py and call_sites.py use, so
+    one identifier runs the length of the pipeline. A bare one-column list
+    headed `name` is also accepted for a hand-written panel.
+    """
     df = pd.read_csv(path, sep="\t", dtype=str)
-    if col not in df.columns:
-        die(f"{path} is missing a {col!r} column (needed to name {what})")
+    col = next((c for c in cols if c in df.columns), None)
+    if col is None:
+        die(f"{path} has none of the expected column(s) {list(cols)} "
+            f"(needed to name {what}); it has: {list(df.columns)}")
     ids = df[col].dropna().astype(str).str.strip().tolist()
     if not ids:
         die(f"{path} lists no {what}")
@@ -65,7 +74,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--panel", required=True,
-                    help="TSV of the oligo panel; needs a 'name' column")
+                    help="build_panel.py's panel metadata TSV (key column "
+                         "'sequence_id'); a bare list headed 'name' also works")
     ap.add_argument("--structures", required=True,
                     help="TSV of prepared structures; needs 'structure_id'")
     ap.add_argument("--motifs", default="",
@@ -92,9 +102,9 @@ def main() -> None:
         if v < 1:
             die(f"{name} must be >= 1, got {v}")
 
-    oligos = read_ids(args.panel, "name", "oligos")
-    structures = read_ids(args.structures, "structure_id", "structures")
-    motifs = read_ids(args.motifs, "family", "motif families") if args.motifs else []
+    oligos = read_ids(args.panel, ("sequence_id", "name"), "oligos")
+    structures = read_ids(args.structures, ("structure_id",), "structures")
+    motifs = read_ids(args.motifs, ("family",), "motif families") if args.motifs else []
     partners = [p.strip() for p in args.partners.split(",") if p.strip()]
     if len(set(partners)) != len(partners):
         die(f"--partners repeats a name: {partners}")

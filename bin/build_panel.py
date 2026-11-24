@@ -12,6 +12,15 @@ description carries the annotation:
 
   >rank1 chr1:130352560-130352639 summit=130352599 track=HSV-1 Infected THP1 Cells (Cytosolic Fraction - 1 HPI)
 
+A sequence that is deliberately not genomic - a published control oligo or a
+designed construct - puts the literal token 'synthetic' where the locus goes:
+
+  >G3_YSD synthetic role=control source=Herzner_2015_ni.3267_oligo122
+
+Such records carry no coordinates, because inventing one would place a false
+position in the metadata and in every later join. summit= is rejected for
+them.
+
   name    rank1
   locus   chr1:130352560-130352639   0-based half-open, + strand
   summit  130352599                  optional, genomic
@@ -87,7 +96,31 @@ def parse_header(header: str, seq_len: int | None = None) -> dict:
            "summit": None, "mutation": "", "extra": {}}
 
     if len(parts) == 1:
-        raise HeaderError(f"'{oligo_id}': header has no chrom:start-end token")
+        raise HeaderError(f"'{oligo_id}': header has no chrom:start-end token. "
+                          "A sequence that is deliberately not genomic (a "
+                          "published control oligo, a designed construct) uses "
+                          "the literal token 'synthetic' in its place.")
+
+    # A synthetic control oligo has no genomic locus, and inventing one would
+    # put a false coordinate in the record and in any later join. Such records
+    # carry no coordinates at all, exactly as mutants do.
+    if parts[1] == "synthetic":
+        out.update(chrom=None, start=None, end=None, role="synthetic")
+        for key, val in KV.findall(parts[2] if len(parts) > 2 else ""):
+            k, val = key.lower(), val.strip()
+            if k == "summit":
+                raise HeaderError(f"'{oligo_id}': summit= is meaningless for a "
+                                  "synthetic sequence, which has no genomic "
+                                  "position to be a summit of")
+            if k == "lineage":
+                out["lineage_id"] = val
+            elif k == "role":
+                out["role"] = val
+            elif k == "mutation":
+                out["mutation"] = val
+            else:
+                out["extra"][key] = val
+        return out
 
     m = LOCUS.match(parts[1])
     if not m:
