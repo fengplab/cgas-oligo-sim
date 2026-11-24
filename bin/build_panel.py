@@ -205,6 +205,77 @@ def notes_from(parsed: dict) -> str:
     return "; ".join(bits)
 
 
+def detect_coords(fasta: str) -> tuple[str, dict]:
+    """Work out whether the headers are 0-based half-open or 1-based closed.
+
+    Per record exactly one convention can fit, because end-start and
+    end-start+1 cannot both equal the same length. So the test is unanimity
+    across the file, and anything less is a refusal rather than a majority
+    vote: a file whose records disagree is broken, not ambiguous.
+
+    WHAT THIS PROVES, AND WHAT IT DOES NOT
+    Matching span to sequence length proves the header is *internally*
+    consistent under some convention. It cannot prove the coordinates are
+    right. If whatever produced the file had an off-by-one bug, the headers
+    would be internally consistent under the wrong convention, and detection
+    would happily adopt it and shift every coordinate by one. The only test
+    that settles that is pulling the reference sequence at the stated locus
+    and comparing bases, which needs the genome and is not done here.
+
+    Records with no locus (the 'synthetic' token) carry no coordinates and are
+    excluded from the vote.
+    """
+    fits: dict[str, list[str]] = {"0-half-open": [], "1-closed": [],
+                                  "neither": []}
+    detail, n_locus = [], 0
+    for rec in SeqIO.parse(fasta, "fasta"):
+        parts = (rec.description or rec.id).split()
+        name = parts[0] if parts else rec.id
+        if len(parts) < 2 or parts[1] == "synthetic":
+            continue
+        m = LOCUS.match(parts[1])
+        if not m:
+            continue
+        n_locus += 1
+        n = len(rec.seq)
+        half = int(m["end"]) - int(m["start"])
+        fit = ("0-half-open" if half == n else
+               "1-closed" if half + 1 == n else "neither")
+        fits[fit].append(name)
+        detail.append({"record": name, "length": n, "end_minus_start": half,
+                       "fits": fit})
+
+    evidence = {"records_with_locus": n_locus,
+                "n_0_half_open": len(fits["0-half-open"]),
+                "n_1_closed": len(fits["1-closed"]),
+                "n_neither": len(fits["neither"]),
+                "per_record": detail}
+
+    if n_locus == 0:
+        return "0-half-open", {**evidence, "decision": "no locus-bearing "
+                               "record; convention is irrelevant"}
+
+    if fits["neither"]:
+        bad = ", ".join(fits["neither"][:6]) + (" ..." if len(fits["neither"]) > 6 else "")
+        die(f"cannot detect a coordinate convention: {len(fits['neither'])} of "
+            f"{n_locus} record(s) fit NEITHER 0-half-open nor 1-closed "
+            f"({bad}). That is not a convention difference, it is a real "
+            "disagreement between the headers and the sequences. Fix it where "
+            "the file is produced; do not pick a convention to paper over it.")
+
+    agreeing = [k for k in ("0-half-open", "1-closed") if fits[k]]
+    if len(agreeing) > 1:
+        die("cannot detect a coordinate convention: the file MIXES them - "
+            f"{len(fits['0-half-open'])} record(s) fit 0-half-open and "
+            f"{len(fits['1-closed'])} fit 1-closed. A majority vote here would "
+            "silently shift one group by a base. Regenerate the file at "
+            "source so one convention holds throughout.")
+
+    chosen = agreeing[0]
+    return chosen, {**evidence, "decision": f"unanimous: {n_locus}/{n_locus} "
+                    f"locus-bearing record(s) fit {chosen}"}
+
+
 def die(msg: str) -> None:
     sys.stderr.write(f"ERROR: {msg}\n")
     sys.exit(1)
@@ -253,14 +324,18 @@ def main() -> None:
                     help="report, for every record, which coordinate "
                          "convention matches its sequence length, then exit "
                          "without writing anything.")
-    ap.add_argument("--header-coords", choices=["0-half-open", "1-closed"],
-                    default="0-half-open",
+    ap.add_argument("--header-coords",
+                    choices=["auto", "0-half-open", "1-closed"],
+                    default="auto",
                     help="convention of the chrom:start-end token in the FASTA "
                          "headers. 0-half-open is BED/narrowPeak (end-start == "
                          "length); 1-closed is a samtools faidx region "
                          "(end-start+1 == length). crossrun's top-peaks FASTA "
                          "headers are faidx region strings, so they are "
-                         "1-closed. Coordinates are stored 0-based half-open "
+                         "1-closed. 'auto' (the default) decides by matching "
+                         "every record's span to its sequence length and "
+                         "requires unanimity, refusing a file whose records "
+                         "disagree. Coordinates are stored 0-based half-open "
                          "either way.")
     ap.add_argument("--mutants", help="optional TSV: name, oligo, mutation")
     ap.add_argument("--min-length", type=int, default=60)
@@ -313,6 +388,19 @@ def main() -> None:
               "wrong and should be regenerated at source.")
         sys.exit(1)
 
+    coords = args.header_coords
+    coord_evidence = None
+    if coords == "auto":
+        coords, coord_evidence = detect_coords(args.fasta)
+        print(f"[build_panel] header coordinates detected as {coords} "
+              f"({coord_evidence['decision']})")
+        if coord_evidence["records_with_locus"]:
+            print("[build_panel] detection matches span to sequence length, "
+                  "which shows the headers are self-consistent. It cannot show "
+                  "they are correct: if the file's producer was off by one, "
+                  "detection adopts that and shifts every coordinate. Only "
+                  "comparing bases against the reference genome settles it.")
+
     parents, records, meta = {}, [], []
     for rec in SeqIO.parse(args.fasta, "fasta"):
         seq = str(rec.seq).upper()
@@ -327,7 +415,7 @@ def main() -> None:
         # the summit bounds check all live in parse_fasta_header.
         try:
             h = parse_header(rec.description or rec.id, seq_len=len(seq),
-                             coords=args.header_coords)
+                             coords=coords)
         except HeaderError as exc:
             die(f"{args.fasta}: {exc}")
         name = h["sequence_id"]
@@ -398,7 +486,9 @@ def main() -> None:
             # What the input headers were READ as. Without this the stored
             # coordinates cannot be audited: a one-base shift leaves no trace
             # in the numbers themselves.
-            "header_coords_input": args.header_coords,
+            "header_coords_input": coords,
+            "header_coords_mode": args.header_coords,
+            "header_coords_evidence": coord_evidence,
             "locus": "0-based half-open, + strand (stored; converted from "
                      "header_coords_input)",
             "mutation_position": "1-based into the oligo; reference base asserted",

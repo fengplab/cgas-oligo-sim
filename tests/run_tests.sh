@@ -20,6 +20,32 @@ python3 bin/call_sites.py \
 
 # Fixture-only: rekey synthetic poses onto the called site ids, matched by
 echo
+echo "--- build_panel: coordinate convention is DETECTED, and refused when unclear ---"
+python3 tests/make_coord_fixtures.py
+
+for conv in 1closed 0half; do
+    if [ "$conv" = 1closed ]; then want=1-closed; else want=0-half-open; fi
+    got=$(python3 bin/build_panel.py --fasta tests/out/coords_$conv.fa \
+            --out-fasta tests/out/coords_$conv.built.fa \
+            --out-metadata tests/out/coords_$conv.tsv \
+            --out-summary tests/out/coords_$conv.json \
+          | sed -n 's/.*detected as \([^ ]*\) .*/\1/p')
+    if [ "$got" != "$want" ]; then
+        echo "FAIL: $conv detected as '$got', expected '$want'"; exit 1
+    fi
+    python3 tests/check_coord_detection.py "$conv"
+done
+
+for bad in mixed neither; do
+    if python3 bin/build_panel.py --fasta tests/out/coords_$bad.fa \
+        --out-fasta /dev/null --out-metadata /dev/null \
+        --out-summary /dev/null >/dev/null 2>&1; then
+        echo "FAIL: a '$bad' file was accepted; detection must refuse it"; exit 1
+    fi
+done
+echo "  OK mixed and fits-neither files are both refused"
+
+echo
 echo "--- environment.yml matches the code's imports ---"
 python3 tests/check_environment.py
 
