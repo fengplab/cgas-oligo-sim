@@ -257,6 +257,14 @@ __marimo__/
 # covered below.
 /structures.tsv
 
+# Inputs and run logs. Both hold downloads and per-run output specific to one
+# machine: data/ carries the panel FASTA, reference sequences and the mmCIF
+# downloads, logs/ the per-step logs. Root-anchored, like /work/ above: an
+# unanchored data/ or logs/ would also swallow any nested one, which is the
+# mistake that silently dropped tests/examples/work/ before.
+/data/
+/logs/
+
 # Published outputs
 /results/
 /results_*/
