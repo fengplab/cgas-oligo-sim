@@ -82,8 +82,25 @@ class HeaderError(ValueError):
     pass
 
 
-def parse_header(header: str, seq_len: int | None = None) -> dict:
-    """Return the fields of one FASTA header. Raises HeaderError on anything odd."""
+def parse_header(header: str, seq_len: int | None = None,
+                 coords: str = "0-half-open") -> dict:
+    """Return the fields of one FASTA header. Raises HeaderError on anything odd.
+
+    `coords` names the convention of the header's chrom:start-end token:
+
+      "0-half-open"  end - start     == len(seq)   (BED/narrowPeak)
+      "1-closed"     end - start + 1 == len(seq)   (samtools faidx region)
+
+    Either way the returned start/end are **0-based half-open**, which is the
+    only convention used downstream. A 1-closed header is converted here, at
+    the single point where headers are read, so no other module has to know.
+
+    crossrun's own R/plot_peak_sequences.R says the summit is 0-based
+    (narrowPeak) while the faidx region it builds is 1-based closed, so a
+    1-closed header carries a 0-based summit beside a 1-based interval. The
+    summit is therefore NOT shifted, and the bounds check is done in 0-based
+    space after conversion.
+    """
     text = header[1:] if header.startswith(">") else header
     text = text.strip()
     if not text:
@@ -127,6 +144,11 @@ def parse_header(header: str, seq_len: int | None = None) -> dict:
         raise HeaderError(f"'{oligo_id}': second token '{parts[1]}' is not "
                           "chrom:start-end")
     chrom, start, end = m["chrom"], int(m["start"]), int(m["end"])
+    if coords == "1-closed":
+        # faidx region -> 0-based half-open. Only the start moves.
+        start, end = start - 1, end
+    elif coords != "0-half-open":
+        raise HeaderError(f"unknown coords convention {coords!r}")
     if not UCSC.match(chrom):
         raise HeaderError(f"'{oligo_id}': contig '{chrom}' is not UCSC-style. A "
                           "RefSeq (NC_0609xx.1) or GenBank (CP0682xx.2) name here "
@@ -135,10 +157,18 @@ def parse_header(header: str, seq_len: int | None = None) -> dict:
         raise HeaderError(f"'{oligo_id}': interval [{start},{end}) is empty or "
                           "reversed")
     if seq_len is not None and (end - start) != seq_len:
+        alt = ("1-closed" if coords == "0-half-open" else "0-half-open")
+        alt_span = (end - start + 1) if coords == "0-half-open" else (end - start - 1)
+        hint = (f" Read as {alt} this record spans {alt_span} bp, which DOES "
+                f"match; if that holds for every record in the file, pass "
+                f"--header-coords {alt}."
+                if alt_span == seq_len else
+                f" Read as {alt} it would span {alt_span} bp, which does not "
+                "match either, so this is not a convention difference.")
         raise HeaderError(
-            f"'{oligo_id}': header interval [{start},{end}) spans {end - start} bp "
-            f"but the sequence is {seq_len} bp. Coordinates are 0-based half-open; "
-            "do not reconcile this by shifting one until you know which is wrong.")
+            f"'{oligo_id}': header interval spans {end - start} bp under "
+            f"{coords} but the sequence is {seq_len} bp.{hint} Do not "
+            "reconcile this by shifting one until you know which is wrong.")
     out.update(chrom=chrom, start=start, end=end)
 
     for key, val in KV.findall(parts[2] if len(parts) > 2 else ""):
@@ -219,6 +249,19 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fasta", required=True)
+    ap.add_argument("--diagnose-coords", action="store_true",
+                    help="report, for every record, which coordinate "
+                         "convention matches its sequence length, then exit "
+                         "without writing anything.")
+    ap.add_argument("--header-coords", choices=["0-half-open", "1-closed"],
+                    default="0-half-open",
+                    help="convention of the chrom:start-end token in the FASTA "
+                         "headers. 0-half-open is BED/narrowPeak (end-start == "
+                         "length); 1-closed is a samtools faidx region "
+                         "(end-start+1 == length). crossrun's top-peaks FASTA "
+                         "headers are faidx region strings, so they are "
+                         "1-closed. Coordinates are stored 0-based half-open "
+                         "either way.")
     ap.add_argument("--mutants", help="optional TSV: name, oligo, mutation")
     ap.add_argument("--min-length", type=int, default=60)
     ap.add_argument("--max-length", type=int, default=1000)
@@ -226,6 +269,49 @@ def main() -> None:
     ap.add_argument("--out-metadata", required=True)
     ap.add_argument("--out-summary", required=True)
     args = ap.parse_args()
+
+    if args.diagnose_coords:
+        # One record agreeing with a convention is a coincidence; the whole
+        # file agreeing is evidence. Writes nothing.
+        recs = list(SeqIO.parse(args.fasta, "fasta"))
+        if not recs:
+            die(f"{args.fasta} contains no sequences")
+        tally = {"0-half-open": 0, "1-closed": 0, "neither": 0}
+        print(f"{'record':16s} {'len':>5s} {'end-start':>10s} {'+1':>5s}  fits")
+        for rec in recs:
+            seq = str(rec.seq)
+            parts = (rec.description or rec.id).split()
+            m = LOCUS.match(parts[1]) if len(parts) > 1 else None
+            if not m:
+                tally["neither"] += 1
+                print(f"{parts[0]:16s} {len(seq):5d} {'-':>10s} {'-':>5s}  "
+                      "no chrom:start-end token")
+                continue
+            half = int(m["end"]) - int(m["start"])
+            fit = ("0-half-open" if half == len(seq) else
+                   "1-closed" if half + 1 == len(seq) else "neither")
+            tally[fit] += 1
+            print(f"{parts[0]:16s} {len(seq):5d} {half:10d} {half+1:5d}  {fit}")
+        n = len(recs)
+        print()
+        for k, v in tally.items():
+            if v:
+                print(f"  {v}/{n} record(s) fit {k}")
+        fits = [k for k in ("0-half-open", "1-closed") if tally[k]]
+        print()
+        if tally["neither"]:
+            print("Some records fit NEITHER convention, so this is not a "
+                  "convention difference but a real inconsistency between the "
+                  "headers and the sequences. Find it before building a panel "
+                  "from this file.")
+            sys.exit(1)
+        if len(fits) == 1:
+            print(f"Every record fits {fits[0]}. Rerun with "
+                  f"--header-coords {fits[0]}.")
+            sys.exit(0)
+        print("The file MIXES both conventions. Do not pick one - the file is "
+              "wrong and should be regenerated at source.")
+        sys.exit(1)
 
     parents, records, meta = {}, [], []
     for rec in SeqIO.parse(args.fasta, "fasta"):
@@ -240,7 +326,8 @@ def main() -> None:
         # Header parsing, the locus/length check, the UCSC contig assertion and
         # the summit bounds check all live in parse_fasta_header.
         try:
-            h = parse_header(rec.description or rec.id, seq_len=len(seq))
+            h = parse_header(rec.description or rec.id, seq_len=len(seq),
+                             coords=args.header_coords)
         except HeaderError as exc:
             die(f"{args.fasta}: {exc}")
         name = h["sequence_id"]
@@ -308,7 +395,12 @@ def main() -> None:
         "length_min": min(len(s) for _, s in records),
         "length_max": max(len(s) for _, s in records),
         "conventions": {
-            "locus": "0-based half-open, + strand",
+            # What the input headers were READ as. Without this the stored
+            # coordinates cannot be audited: a one-base shift leaves no trace
+            # in the numbers themselves.
+            "header_coords_input": args.header_coords,
+            "locus": "0-based half-open, + strand (stored; converted from "
+                     "header_coords_input)",
             "mutation_position": "1-based into the oligo; reference base asserted",
         },
         "mutations": mut_detail,
