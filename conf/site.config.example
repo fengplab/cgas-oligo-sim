@@ -1,0 +1,38 @@
+// Site-specific configuration. COPY, do not edit in place:
+//
+//     mkdir -p config && cp conf/site.config.example config/site.config
+//     # edit config/site.config with this machine's paths
+//     nextflow run main.nf -profile slurm -c config/site.config -resume
+//
+// config/ is gitignored, so this file is never touched by a pull and never
+// committed back. nextflow.config holds everything portable and sets every
+// value below to null, so there is nothing here that has to win a merge.
+//
+// Omit a value and the run stops with requireParam naming it, rather than
+// starting and publishing somewhere unintended.
+
+params {
+    // Nextflow is launched from here. MUST be on BeeGFS: NFS has no file
+    // locking, and .nextflow/ and work/ are written through locks.
+    project_dir       = '/home/bradlem9/bradlem9/cgas-oligo-sim'
+
+    // Published outputs. On NFS so the laptop can open reports. Published
+    // with mode 'copy' - links into BeeGFS are broken when read from there.
+    outdir            = '/home/bradlem9/isilon/cGAS/cgas-oligo-sim'
+
+    // genesis_cg_tool checkout (ships with GENESIS >1.7 under
+    // src/analysis/cg_tools).
+    genesis_cg_tool   = null
+
+    // Container images you have pulled and verified. Pin to an exact tag or
+    // digest, never :latest.
+    container_python  = null   // python3 + numpy, pandas, matplotlib
+    container_genesis = null   // atdyn + julia + genesis_cg_tool
+
+    // Only needed when vendor_js = true.
+    js_bundle         = null
+
+    // Uncomment if this partition's node shape differs from the defaults.
+    // cg_mpi_ranks   = 4
+    // cg_omp_threads = 2
+}

@@ -247,12 +247,14 @@ __marimo__/
 # /work/ is: an unanchored config/ would also swallow any nested config/.
 /config/
 
-# The root copies are ignored too, so keeping a working nextflow.config at the
-# launch directory - a copy or a symlink into config/ - does not show up as
-# untracked noise and cannot be committed back by accident. Root-anchored:
-# tests/fixtures/structures.tsv is generated and already ignored, and no other
-# structures.tsv should be caught.
-/nextflow.config
+# nextflow.config IS tracked again: it holds only portable values, with every
+# machine-specific one set to null and supplied by config/site.config. See
+# conf/site.config.example.
+#
+# structures.tsv at the root stays ignored - the tracked copy is
+# conf/structures.template.tsv, and the filled-in one belongs in config/.
+# Root-anchored because tests/fixtures/structures.tsv is generated and already
+# covered below.
 /structures.tsv
 
 # Published outputs

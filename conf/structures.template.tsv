@@ -1,0 +1,67 @@
+# TEMPLATE. Copy to config/structures.tsv (gitignored) and fill cif_path:
+#     mkdir -p config && cp conf/structures.template.tsv config/structures.tsv
+#     python3 bin/prepare_structures.py --samplesheet config/structures.tsv \
+#         --reference <Q8N884.fasta> --out-dir work/struct
+#
+# --reference wants the cGAS PROTEIN sequence (UniProt Q8N884), NOT the genome
+# FASTA. A, C, G and T are valid amino-acid letters, so a nucleotide file is a
+# syntactically valid protein; the script checks composition to catch it.
+#
+# Coordinates come from https://files.rcsb.org/download/<ID>.cif - the archive
+# mmCIF. Not the structure factors (*-sf.cif: reflections, no atoms) and not a
+# pre-generated assembly file (symmetry already applied, nothing left to expand).
+#
+# cGAS structures for cgas-oligo-sim. Fill cif_path, then run:
+#   python3 bin/prepare_structures.py --samplesheet structures.tsv \
+#       --reference <human_cGAS_Q8N884.fasta> --out-dir work/struct
+#
+# PROVENANCE. Every field below was checked against PDB entry records in this
+# session except where marked UNVERIFIED. Nothing here is from memory.
+#
+#   4MKP  "Crystal structure of human cGAS apo form", 1.95 A, Homo sapiens,
+#         Mutation(s): 0, 364 residues, gene MB21D1.
+#   6CT9  "Structure of the human cGAS-DNA complex", 2.26 A, Homo sapiens,
+#         UniProt Q8N884, chain A = protein (367 aa), chains B/C = 17-mer DNA,
+#         plus Zn. Sequence modifications: Ser156 expression tag,
+#         Asn187 (WT Lys187) and Arg195 (WT Leu195), both ENGINEERED MUTATIONS.
+#         Zhou et al. 2018 Cell 174:300-311.e11.
+#   6CTA  "Structure of the human cGAS-DNA complex with ATP", 2.78 A,
+#         Homo sapiens, Mutation(s): 2, mutagens K187N, L195R. Same construct
+#         as 6CT9 with ATP bound.
+#   4O69  "Human cyclic GMP-AMP synthase (cGAS) in complex with sulfate ion",
+#         2.25 A, Homo sapiens, Mutation(s): 0, 363 residues.
+#
+# NOT INCLUDED, and why:
+#   4O6A  "Mouse cyclic GMP-AMP synthase (cGAS) in complex with DNA",
+#         Mus musculus, 1.86 A. This is MOUSE. This project is human-scoped,
+#         and human and mouse cGAS differ at exactly the positions that control
+#         DNA-length sensitivity (187/195), so mixing them would confound the
+#         comparison you are making. Added below as an explicit, labelled
+#         cross-species control only - leave it commented out unless you want it.
+#
+# K187/L195: human WT is K187/L195; the mouse-equivalent residues are N187/R195.
+# 6CT9 and 6CTA were crystallised carrying the mouse-like N187/R195, which sit
+# in the DNA-binding region under study. 'auto' reverts them to the reference
+# and records every change in work/struct/wt_reversions.tsv.
+# chain: comma-separated, or 'all' for every protein chain that survives
+#   stripping. assembly: blank = deposited coordinates; otherwise the assembly
+#   id to expand first (check _pdbx_struct_assembly in the mmCIF - the id is
+#   usually '1', but confirm rather than assume).
+# Non-protein chains are ALWAYS dropped, so 6CT9's crystallographic 17-mer
+# (chains B/C) and its Zn do not reach the CG build.
+structure_id	pdb_id	chain	cif_path	revert	assembly
+cgas_apo_human	4MKP	all	FILL_IN/4mkp.cif	auto	
+cgas_dna_monomer	6CT9	all	FILL_IN/6ct9.cif	auto	
+cgas_dna_dimer	6CT9	all	FILL_IN/6ct9.cif	auto	FILL_IN_ASSEMBLY_ID
+#cgas_dna_atp_human	6CTA	A	FILL_IN/6cta.cif	auto
+#cgas_sulfate_human	4O69	A	FILL_IN/4o69.cif	auto
+#
+# UNVERIFIED: 4K8V's entry title is the generic "Structure of cyclic GMP-AMP
+# Synthase (cGAS)" (2.00 A, Gao/Wu/Patel, deposited 2013-04-18). The records I
+# could reach did NOT state its source organism or confirm it is apo, so it is
+# left commented out. Confirm both before using it:
+#   curl -s https://data.rcsb.org/rest/v1/core/entry/4K8V | python3 -m json.tool
+#cgas_apo_4k8v	4K8V	A	FILL_IN/4k8v.cif	auto
+#
+# Cross-species control only. Never pool with the human arms.
+#cgas_dna_mouse	4O6A	A	FILL_IN/4o6a.cif	none
