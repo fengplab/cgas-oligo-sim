@@ -28,14 +28,20 @@ process GENESIS_CG_RUN {
     // Local install when genesis_bin is supplied, container otherwise.
     container { params.genesis_bin ? null : params.container_genesis }
 
+    // Replicate and seed come from the job matrix row, not from `each replicate`
+    // and not from arithmetic here. enumerate_arms.py derives each seed from
+    // (global seed, arm, oligo, panel, replicate); the previous
+    // `params.seed + replicate` gave every oligo and every arm at the same
+    // replicate index an IDENTICAL random stream, correlating thermal noise
+    // across exactly the comparison this campaign is making.
     input:
-    tuple val(sequence_id), val(lineage_id), path(top), path(gro), path(topdir)
-    each replicate
+    tuple val(sequence_id), val(lineage_id), val(arm), val(replicate), val(seed),
+          path(top), path(gro), path(topdir)
 
     output:
-    tuple val(sequence_id), val(lineage_id), val(replicate),
-          path("${sequence_id}_rep${replicate}.dcd")    , emit: traj
-    path "${sequence_id}_rep${replicate}.log"           , emit: log
+    tuple val(sequence_id), val(lineage_id), val(arm), val(replicate),
+          path("${prefix}.dcd")                         , emit: traj
+    path "${prefix}.log"                                , emit: log
     path "versions.yml"                                 , emit: versions
 
     script:
@@ -44,8 +50,29 @@ process GENESIS_CG_RUN {
               "of a local GENESIS install, or params.container_genesis to an " +
               "image that provides atdyn. Neither is set."
     }
-    // Seed is deterministic in the sequence and replicate, and is recorded.
-    def seed = "${params.seed}".toInteger() + replicate
+    prefix = "${sequence_id}_${arm.replaceAll(/[^A-Za-z0-9._-]/, '_')}_rep${replicate}"
+    // atdyn reads box_size_x/y/z only under type = PBC, and does not fail when
+    // they are missing - it silently omits the box_size line from its setup log,
+    // because a box may legitimately come from a restart file. So refuse here
+    // rather than start a run with an undefined volume.
+    // Validate numerically, not just against Groovy null: a value supplied on the
+    // command line arrives as a String, so `--cg_box_size null` is the four-letter
+    // string and would sail past a null check straight into the control file.
+    if (params.cg_boundary == 'PBC') {
+        def box_ok = params.cg_box_size != null &&
+                     params.cg_box_size.toString().isNumber() &&
+                     params.cg_box_size.toString().toDouble() > 0
+        if (!box_ok) {
+            error "params.cg_boundary is 'PBC' but params.cg_box_size is not a " +
+                  "positive number (got: ${params.cg_box_size}). The box volume sets " +
+                  "the effective concentration, so it cannot be unset or zero. " +
+                  "A 300 A cube is about 61 uM for one copy of each species."
+        }
+    }
+    def boundary_box = params.cg_boundary == 'PBC' ? """box_size_x = ${params.cg_box_size}
+box_size_y = ${params.cg_box_size}
+box_size_z = ${params.cg_box_size}
+""" : ''
     def atdyn_resolve = params.genesis_bin ?
         "ATDYN='${params.genesis_bin}/atdyn'" :
         'ATDYN="\$(command -v atdyn)"'
@@ -63,8 +90,8 @@ grotopfile = ${top}
 grocrdfile = ${gro}
 
 [OUTPUT]
-dcdfile = ${sequence_id}_rep${replicate}.dcd
-rstfile = ${sequence_id}_rep${replicate}.rst
+dcdfile = ${prefix}.dcd
+rstfile = ${prefix}.rst
 
 [ENERGY]
 forcefield             = RESIDCG
@@ -100,7 +127,7 @@ gamma_t     = ${params.cg_gamma_t}
 
 [BOUNDARY]
 type = ${params.cg_boundary}
-INPEOF
+${boundary_box}INPEOF
 
     ${atdyn_resolve}
     if [ ! -x "\$ATDYN" ]; then
@@ -110,12 +137,12 @@ INPEOF
 
     # Serial: one process, OpenMP threads only. No mpirun - see the header.
     export OMP_NUM_THREADS=${params.cg_omp_threads}
-    "\$ATDYN" md.inp > ${sequence_id}_rep${replicate}.log 2>&1
+    "\$ATDYN" md.inp > ${prefix}.log 2>&1
 
     # A trajectory that is absent or empty is a failure, not an empty result.
-    if [ ! -s "${sequence_id}_rep${replicate}.dcd" ]; then
+    if [ ! -s "${prefix}.dcd" ]; then
         echo "ERROR: atdyn produced no trajectory for ${sequence_id} rep ${replicate}" >&2
-        tail -40 ${sequence_id}_rep${replicate}.log >&2
+        tail -40 ${prefix}.log >&2
         exit 1
     fi
 
@@ -129,10 +156,11 @@ INPEOF
     """
 
     stub:
+    prefix = "${sequence_id}_${arm.replaceAll(/[^A-Za-z0-9._-]/, '_')}_rep${replicate}"
     """
     set -euo pipefail
-    echo stub > ${sequence_id}_rep${replicate}.dcd
-    echo stub > ${sequence_id}_rep${replicate}.log
+    echo stub > ${prefix}.dcd
+    echo stub > ${prefix}.log
     echo '"${task.process}": {stub: true}' > versions.yml
     """
 }

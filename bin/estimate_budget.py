@@ -16,6 +16,21 @@ from __future__ import annotations
 import argparse
 
 
+def budget(n_traj, min_per_traj, omp_threads, concurrent):
+    """Core-hours and wall days for n_traj trajectories.
+
+    These scale differently and must not be derived from each other. Core-hours
+    count the threads each trajectory occupies, because a serial atdyn with
+    OMP_NUM_THREADS=n holds n cores for its whole wall time. Wall time does NOT:
+    `concurrent` counts trajectories in flight, not cores, so folding the thread
+    count into it would inflate the schedule by exactly that factor.
+    """
+    traj_minutes = n_traj * min_per_traj
+    cpu_h = traj_minutes * omp_threads / 60.0
+    wall_d = traj_minutes / concurrent / 60.0 / 24.0
+    return cpu_h, wall_d
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -29,6 +44,9 @@ def main() -> None:
     ap.add_argument("--min-per-traj", type=float, default=None,
                     help="MEASURED wall-minutes for one trajectory")
     ap.add_argument("--concurrent", type=int, default=100, help="trajectories running at once")
+    ap.add_argument("--omp-threads", type=int, default=2,
+                    help="OpenMP threads per trajectory; must match params.cg_omp_threads. "
+                         "atdyn is serial + OpenMP, so this is the core count per trajectory")
     args = ap.parse_args()
 
     arms = 1 + args.partners + args.motifs + max(0, args.structures - 1)
@@ -55,17 +73,20 @@ def main() -> None:
     if args.min_per_traj is None:
         print()
         print("No --min-per-traj given, so no wall-time estimate.")
-        print("Measure it:  time mpirun -np 4 atdyn md.inp   on one representative system.")
+        print("Measure it:  OMP_NUM_THREADS=%d time atdyn md.inp   on one representative"
+              % args.omp_threads)
+        print("system. atdyn is built --disable-mpi, so it is one serial process with")
+        print("OpenMP threads; there are no ranks.")
         for m in (1, 5, 15, 60):
-            cpu_h = total * m / 60
-            wall_d = cpu_h / args.concurrent / 24
+            cpu_h, wall_d = budget(total, m, args.omp_threads, args.concurrent)
             print(f"  if {m:>3} min/traj -> {cpu_h:>12,.0f} core-hours, "
                   f"{wall_d:>7.1f} days wall at {args.concurrent} concurrent")
     else:
-        cpu_h = total * args.min_per_traj / 60
-        wall_d = cpu_h / args.concurrent / 24
+        cpu_h, wall_d = budget(total, args.min_per_traj, args.omp_threads,
+                               args.concurrent)
         print(f"at {args.min_per_traj} min/traj -> {cpu_h:,.0f} core-hours, "
-              f"{wall_d:.1f} days wall at {args.concurrent} concurrent")
+              f"{wall_d:.1f} days wall at {args.concurrent} concurrent "
+              f"({args.omp_threads} thread(s) each)")
 
 
 if __name__ == "__main__":

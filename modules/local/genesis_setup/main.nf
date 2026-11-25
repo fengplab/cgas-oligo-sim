@@ -17,19 +17,26 @@ process GENESIS_SETUP {
     // singularity.enabled = true.
     container { params.julia_exe ? null : params.container_genesis }
 
+    // Everything that varies per arm travels IN the tuple. Declaring cgas_pdb
+    // and pfm as separate inputs made them broadcast value channels, so every
+    // arm would have received the same structure - which silently defeats the
+    // whole point of a structure arm.
     input:
-    tuple val(sequence_id), val(lineage_id), path(seq_fasta)
-    path cgas_pdb
-    path pfm
+    tuple val(sequence_id), val(lineage_id), val(arm), val(mode), val(motif),
+          path(seq_fasta), path(cgas_pdb), path(pfm)
 
     output:
-    tuple val(sequence_id), val(lineage_id),
-          path("${sequence_id}_system.top"), path("${sequence_id}_init.gro"),
+    tuple val(sequence_id), val(lineage_id), val(arm),
+          path("${prefix}_system.top"), path("${prefix}_init.gro"),
           path("top/*")                                   , emit: system
-    path "${sequence_id}_setup.log"                        , emit: log
+    tuple val(sequence_id), val(arm), path("${prefix}_bead_map.tsv"), emit: bead_map
+    path "${prefix}_setup.log"                             , emit: log
     path "versions.yml"                                    , emit: versions
 
     script:
+    // The same oligo appears in several arms, so the arm goes in the filename.
+    // Sanitised because arm labels contain ':' (e.g. "structure:6CT9").
+    prefix = "${sequence_id}_${arm.replaceAll(/[^A-Za-z0-9._-]/, '_')}"
     if (params.genesis_cg_tool == null) {
         error "params.genesis_cg_tool is not set: path to the genesis_cg_tool " +
               "checkout (ships with GENESIS >1.7 under src/analysis/cg_tools)."
@@ -55,10 +62,10 @@ process GENESIS_SETUP {
     ${jl} ${tool}/src/aa_2_cg.jl ${cgas_pdb} --pwmcos -p ${pfm} \\
         --patch cgas_cg.itp \\
         --pwmcos-scale ${params.pwmcos_scale} \\
-        --pwmcos-shift ${params.pwmcos_shift} 2>&1 | tee -a ${sequence_id}_setup.log
+        --pwmcos-shift ${params.pwmcos_shift} 2>&1 | tee -a ${prefix}_setup.log
 """ : """
     echo "PWMcos OFF: any sequence preference must emerge from 3SPN.2C" \\
-        | tee -a ${sequence_id}_setup.log
+        | tee -a ${prefix}_setup.log
 """
     """
     set -euo pipefail
@@ -66,15 +73,15 @@ process GENESIS_SETUP {
     ${jl_env}
 
     ${jl} ${tool}/tools/modeling/DNA_general/build_dna.jl \\
-        -s ${seq_fasta} -C -o ${sequence_id}_dna 2>&1 | tee ${sequence_id}_setup.log
+        -s ${seq_fasta} -C -o ${prefix}_dna 2>&1 | tee ${prefix}_setup.log
 
     ${jl} ${tool}/src/aa_2_cg.jl ${cgas_pdb} \\
         --force-field-protein AICG2+ \\
         --force-field-DNA 3SPN.2C \\
-        --output-name cgas 2>&1 | tee -a ${sequence_id}_setup.log
+        --output-name cgas 2>&1 | tee -a ${prefix}_setup.log
 ${pwmcos_block}
     mkdir -p top
-    cp ${sequence_id}_dna_cg.itp cgas_cg.itp top/
+    cp ${prefix}_dna_cg.itp cgas_cg.itp top/
 
     # UNVERIFIED: the combined .top is assembled here, not by the tool.
     # [molecules] names must match [moleculetype] in each .itp, and their order
@@ -85,26 +92,37 @@ ${pwmcos_block}
       echo '#include "flexible_local_angle.itp"'
       echo '#include "flexible_local_dihedral.itp"'
       echo '#include "pair_energy_MJ_96.itp"'
-      echo '#include "./top/${sequence_id}_dna_cg.itp"'
+      echo '#include "./top/${prefix}_dna_cg.itp"'
       echo '#include "./top/cgas_cg.itp"'
       echo
       echo '[ system ]'
       echo '${sequence_id} cGAS-DNA'
       echo
       echo '[ molecules ]'
-      echo '${sequence_id}_dna_cg 1'
+      echo '${prefix}_dna_cg 1'
       echo 'cgas_cg 1'
       echo
       echo '[ cg_ele_chain_pairs ]'
       echo 'ON 1 - 3 : 1 - 3'
-    } > ${sequence_id}_system.top
+    } > ${prefix}_system.top
 
     if [ "${params.pwmcos}" = "true" ]; then
       { echo; echo '[ pwmcos_chain_pairs ]'; echo 'ON 1 - 2 : 3 - 3'; } \\
-        >> ${sequence_id}_system.top
+        >> ${prefix}_system.top
     fi
 
-    cat ${sequence_id}_dna_cg.gro cgas_cg.gro > ${sequence_id}_init.gro
+    # Concatenating .gro files does not work: each has a title line, an atom
+    # count and a trailing box line, so `cat` buries those in the middle and
+    # leaves atom indices restarting. merge_cg_system.py writes one valid .gro
+    # with continuous indices, and emits the matching bead map from the same
+    # parse so the two cannot disagree about bead order.
+    merge_cg_system.py \\
+        --dna ${prefix}_dna_cg.gro \\
+        --protein cgas_cg.gro \\
+        --box-angstrom ${params.cg_box_size} \\
+        --title "${sequence_id} cGAS-DNA CG system" \\
+        --out-gro ${prefix}_init.gro \\
+        --out-bead-map ${prefix}_bead_map.tsv 2>&1 | tee -a ${prefix}_setup.log
 
     cat <<-VERSIONS > versions.yml
 	"${task.process}":
@@ -114,12 +132,15 @@ ${pwmcos_block}
     """
 
     stub:
+    prefix = "${sequence_id}_${arm.replaceAll(/[^A-Za-z0-9._-]/, '_')}"
     """
     set -euo pipefail
     mkdir -p top && touch top/stub.itp
-    echo stub > ${sequence_id}_system.top
-    echo stub > ${sequence_id}_init.gro
-    echo stub > ${sequence_id}_setup.log
+    echo stub > ${prefix}_system.top
+    echo stub > ${prefix}_init.gro
+    printf 'bead_index\\trole\\tnt_index\\tstrand\\tcopy\\n0\\tdna\\t1\\t1\\t1\\n' \\
+        > ${prefix}_bead_map.tsv
+    echo stub > ${prefix}_setup.log
     echo '"${task.process}": {stub: true}' > versions.yml
     """
 }
