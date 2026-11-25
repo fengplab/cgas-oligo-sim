@@ -9,9 +9,15 @@
 // The control file never names AICG2+ or 3SPN.2C; the model comes from the
 // topology files.
 //
-// The executable is atdyn, run under MPI with OpenMP threads. GENESIS needs
-// more than one task, so this process REPLACES the profile clusterOptions and
-// therefore repeats --ntasks and --cpus-per-task itself.
+// The executable is atdyn, run SERIALLY with OpenMP threads. GENESIS is built
+// with --disable-mpi, so there are no ranks: parallelism is Slurm fan-out over
+// independent trajectories. This process still REPLACES the profile
+// clusterOptions, so it repeats --ntasks and --cpus-per-task itself.
+//
+// Do not reintroduce mpirun here against a --disable-mpi build. `mpirun -np N`
+// on a serial atdyn starts N independent processes that all write the same
+// dcd, rst and log. That does not fail; it produces a plausible, corrupt
+// trajectory.
 //
 // UNVERIFIED: not executed during authoring. Confirm against the GENESIS
 // manual for the installed version before a production run.
@@ -19,7 +25,8 @@ process GENESIS_CG_RUN {
     label 'genesis'
     tag  "${sequence_id}/rep${replicate}"
 
-    container params.container_genesis
+    // Local install when genesis_bin is supplied, container otherwise.
+    container { params.genesis_bin ? null : params.container_genesis }
 
     input:
     tuple val(sequence_id), val(lineage_id), path(top), path(gro), path(topdir)
@@ -32,8 +39,16 @@ process GENESIS_CG_RUN {
     path "versions.yml"                                 , emit: versions
 
     script:
+    if (params.genesis_bin == null && params.container_genesis == null) {
+        error "GENESIS_CG_RUN needs atdyn. Set params.genesis_bin to the bin/ " +
+              "of a local GENESIS install, or params.container_genesis to an " +
+              "image that provides atdyn. Neither is set."
+    }
     // Seed is deterministic in the sequence and replicate, and is recorded.
     def seed = "${params.seed}".toInteger() + replicate
+    def atdyn_resolve = params.genesis_bin ?
+        "ATDYN='${params.genesis_bin}/atdyn'" :
+        'ATDYN="\$(command -v atdyn)"'
     if (params.cg_boundary == 'NOBC' && params.cg_free_association) {
         log.warn "GENESIS_CG_RUN: boundary is NOBC with free association enabled. " +
                  "cGAS can diffuse away and never return, and no concentration is " +
@@ -87,9 +102,15 @@ gamma_t     = ${params.cg_gamma_t}
 type = ${params.cg_boundary}
 INPEOF
 
+    ${atdyn_resolve}
+    if [ ! -x "\$ATDYN" ]; then
+        echo "ERROR: atdyn not executable at '\$ATDYN'" >&2
+        exit 1
+    fi
+
+    # Serial: one process, OpenMP threads only. No mpirun - see the header.
     export OMP_NUM_THREADS=${params.cg_omp_threads}
-    mpirun -np ${params.cg_mpi_ranks} atdyn md.inp \\
-        > ${sequence_id}_rep${replicate}.log 2>&1
+    "\$ATDYN" md.inp > ${sequence_id}_rep${replicate}.log 2>&1
 
     # A trajectory that is absent or empty is a failure, not an empty result.
     if [ ! -s "${sequence_id}_rep${replicate}.dcd" ]; then
@@ -100,7 +121,9 @@ INPEOF
 
     cat <<-VERSIONS > versions.yml
 	"${task.process}":
-	    atdyn: \$(atdyn --version 2>&1 | head -1 || echo "UNVERIFIED")
+	    atdyn_path: "\$ATDYN"
+	    atdyn_sha256: \$(sha256sum "\$ATDYN" | awk '{print \$1}')
+	    omp_threads: ${params.cg_omp_threads}
 	    seed: ${seed}
 	VERSIONS
     """
