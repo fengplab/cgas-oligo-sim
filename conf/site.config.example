@@ -34,7 +34,8 @@ params {
     // Each is checked at task start, so a wrong path fails the first task
     // rather than 34,000 of them.
 
-    // GENESIS install bin/, holding atdyn and the analysis tools.
+    // GENESIS install bin/, holding atdyn and the analysis tools. Built with
+    // --disable-mpi, so atdyn is serial + OpenMP.
     genesis_bin       = '/home/bradlem9/bradlem9/cgas-oligo-sim/opt/genesis-2.2.0-archv3/bin'
 
     // Julia that runs the genesis_cg_tool scripts. Called explicitly rather
@@ -53,7 +54,7 @@ params {
     // Only needed when vendor_js = true.
     js_bundle         = null
 
-    // Uncomment if this partition's node shape differs from the defaults.
-    // cg_mpi_ranks   = 4
+    // Uncomment if this partition's node shape differs from the default.
+    // atdyn is serial, so this is the OpenMP thread count only.
     // cg_omp_threads = 2
 }
