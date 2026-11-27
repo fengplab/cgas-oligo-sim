@@ -1,0 +1,5 @@
+# Generated job trees and Rosetta output. One NGK array at nstruct 500 writes
+# hundreds of compressed models per structure; none of it is a source file, and
+# all of it is regenerable from config/structures.tsv plus make_inputs.py.
+work/
+logs/
